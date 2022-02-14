@@ -1,0 +1,82 @@
+#include "resource.h"
+#include "version.h"
+
+#include <winres.h>
+
+#ifdef NDEBUG
+IDI_ICON ICON "res/ApplicationIcon.ico"
+#else
+IDI_ICON ICON "res/ApplicationIconDebug.ico"
+#endif
+
+IDB_TOOLBARSTRIP16 BITMAP "res/toolbar@16px.bmp"
+IDB_TOOLBARSTRIP24 BITMAP "res/toolbar@24px.bmp"
+IDB_TOOLBARSTRIP32 BITMAP "res/toolbar@32px.bmp"
+
+IDB_TOOLBARSTRIPHOT16 BITMAP "res/toolbar_hot@16px.bmp"
+IDB_TOOLBARSTRIPHOT24 BITMAP "res/toolbar_hot@24px.bmp"
+IDB_TOOLBARSTRIPHOT32 BITMAP "res/toolbar_hot@32px.bmp"
+
+IDB_TOOLBARSTRIPDISABLED16 BITMAP "res/toolbar_disabled@16px.bmp"
+IDB_TOOLBARSTRIPDISABLED24 BITMAP "res/toolbar_disabled@24px.bmp"
+IDB_TOOLBARSTRIPDISABLED32 BITMAP "res/toolbar_disabled@32px.bmp"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "res/paniview.exe.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     0,0,0,0
+PRODUCTVERSION  0,0,0,0
+FILEOS          VOS_NT
+FILETYPE        VFT_APP
+FILEFLAGSMASK   VS_FF_DEBUG | VS_FF_PRERELEASE | VS_FF_PRIVATEBUILD
+
+#ifdef CIBUILD
+
+#ifndef NDEBUG
+FILEFLAGS       VS_FF_DEBUG | VS_FF_PRERELEASE
+#endif /* ifdef NDEBUG */
+
+#else
+
+#ifdef NDEBUG
+FILEFLAGS       VS_FF_PRIVATEBUILD
+#else
+FILEFLAGS       VS_FF_DEBUG | VS_FF_PRERELEASE | VS_FF_PRIVATEBUILD
+#endif /* ifdef NDEBUG */
+
+#endif /* ifdef CIBUILD */
+
+{
+  BLOCK "StringFileInfo"
+  {
+    BLOCK "000004b0"
+    {
+      VALUE "CompanyName",      "Aragajaga"
+      VALUE "FileDescription",  "PaniView Image Viewer"
+      VALUE "FileVersion",      "0.0.0.0"
+      VALUE "InternalName",     "paniview"
+      VALUE "LegalCopyright",   "Copyright 2022 \251 Aragajaga"
+      VALUE "OriginalFilename", "paniview.exe"
+#ifndef CIBUILD
+      VALUE "PrivateBuild",     VER_PRIVATEBUILD_STRING
+#endif
+      VALUE "ProductName",      "PaniView"
+      VALUE "ProductVersion",   "0.0.0.0"
+    }
+  }
+
+  BLOCK "VarFileInfo"
+  {
+    VALUE "Translation", 0x00, 1200
+  }
+}
+
+IDM_MAIN MENU
+{
+  POPUP "&File"
+  {
+    MENUITEM "&Open", IDM_FILE_OPEN
+    MENUITEM "&Exit", IDM_FILE_EXIT
+  }
+}
+
