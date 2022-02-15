@@ -3,13 +3,6 @@
 
 #include "dlnklist.h"
 
-#define IDM_PREV  2001
-#define IDM_NEXT  2002
-#define IDM_ZOOMOUT 2003
-#define IDM_ZOOMIN  2004
-#define IDM_ACTUALSIZE  2005
-#define IDM_FITSIZE 2006
-
 #define WM_SENDNUDES  WM_USER + 1
 #define WM_FILENEXT   WM_USER + 2
 #define WM_FILEPREV   WM_USER + 3
@@ -60,7 +53,56 @@ typedef struct _tagRENDERCTLDATA {
   HWND m_hWnd;
 } RENDERCTLDATA, *LPRENDERCTLDATA;
 
+enum {
+  RENDERER_D2D = 1,
+  RENDERER_GDI = 2,
+};
+
+enum {
+  TITLEPATH_NONE = 1,
+  TITLEPATH_FILE = 2,
+  TITLEPATH_FULL = 3,
+};
+
+enum {
+  TOOLBARTHEME_DEFAULT_16PX = 1,
+  TOOLBARTHEME_DEFAULT_24PX = 2,
+  TOOLBARTHEME_DEFAULT_32PX = 3,
+};
+
+enum {
+  MIME_IMAGE_PNG = 1,
+  MIME_IMAGE_JPG = 2,
+  MIME_IMAGE_GIF = 3,
+};
+
+typedef struct _tagSETTINGS {
+  unsigned char magic[4];
+  unsigned long nVersion;
+  unsigned long checksum;
+  BOOL bEulaAccepted;
+  BOOL bNaviLoop;
+  BOOL bNaviAnyFile;
+  int nPathInTitleType;
+  int nRendererType;
+  int nToolbarTheme;
+} SETTINGS;
+
+typedef struct _tagNAVIASSOCENTRY {
+  WCHAR szExtension[80];
+  int nMimeType;
+} NAVIASSOCENTRY;
+
+typedef struct _tagPANIVIEWAPP {
+  HWND hWndMain;
+  SETTINGS m_settings;
+  PWSTR m_appDataSite;
+  PWSTR m_appCfgPath;
+} PANIVIEWAPP;
+
 HINSTANCE g_hInst;
+
+static const char g_cfgMagic[4] = { 'P', 'N', 'V', '\xE5' };
 
 const WCHAR szPaniView[] = L"PaniView";
 const WCHAR szPaniViewClassName[] = L"PaniView_Main";
@@ -70,6 +112,10 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int);
 
 BOOL InitInstance(HINSTANCE);
 void PopupError(DWORD, HWND);
+BOOL PopupEULADialog();
+BOOL GetApplicationDataSitePath(PWSTR*);
+
+unsigned long crc32(unsigned char *, size_t);
 
 /* Direct2D Utility functions forward declaration */
 static inline D2D1_MATRIX_3X2_F D2DUtilMatrixIdentity();
@@ -86,6 +132,20 @@ typedef VOID(*fnID2D1Bitmap_GetSize)(ID2D1Bitmap *, D2D1_SIZE_F *);
 static inline D2D1_SIZE_F ID2D1HwndRenderTarget_GetSize$Fix(
     ID2D1HwndRenderTarget *);
 static inline D2D1_SIZE_F ID2D1Bitmap_GetSize$Fix(ID2D1Bitmap *);
+
+BOOL Settings_LoadFile(SETTINGS *, PWSTR);
+BOOL Settings_SaveFile(SETTINGS *, PWSTR);
+BOOL Settings_LoadDefault(SETTINGS *);
+
+/* Application object methods forward declarations */
+static inline PANIVIEWAPP *PaniViewApp_GetInstance();
+BOOL PaniViewApp_Initialize(PANIVIEWAPP *);
+PWSTR PaniVewApp_GetAppDataSitePath(PANIVIEWAPP *);
+PWSTR PaniViewApp_GetSettingsFilePath(PANIVIEWAPP *);
+BOOL PaniViewApp_CreateAppDataSite(PANIVIEWAPP *);
+BOOL PaniViewApp_LoadSettings(PANIVIEWAPP *);
+BOOL PaniViewApp_SaveSettings(PANIVIEWAPP *);
+BOOL PaniViewApp_LoadDefaultSettings(PANIVIEWAPP *);
 
 /* Application window forward-declared methods */
 BOOL PaniView_RegisterClass(HINSTANCE);
@@ -115,6 +175,10 @@ HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA, LPWSTR);
 void InvokeFileOpenDialog(LPWSTR*);
 
 BOOL NextFileInDir(LPRENDERCTLDATA, BOOL, LPWSTR);
+
+INT_PTR CALLBACK AboutDlgProc(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK SettingsDlgProc(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK EULADlgProc(HWND, UINT, WPARAM, LPARAM);
 
 /*
  * wWinMain
@@ -146,8 +210,36 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     return -1;
   }
 
+  /* Initialize common controls */
+  BOOL bStatus = FALSE;
+  INITCOMMONCONTROLSEX iccex = { 0 };
+  iccex.dwSize = sizeof(iccex);
+  iccex.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
+  bStatus = InitCommonControlsEx(&iccex);
+  if (!bStatus) {
+    dwError = GetLastError();
+    assert(FALSE);
+    PopupError(dwError, NULL);
+  }
+
+  PANIVIEWAPP *app = PaniViewApp_GetInstance();
+  if (!PaniViewApp_Initialize(app)) {
+    return -1;
+  }
+
   InitInstance(hInstance); /* Initialize the application's instance — register
                               classes, lock single instance mutexes, etc. */
+
+  if (!app->m_settings.bEulaAccepted)
+  {
+    BOOL bAccepted = PopupEULADialog();
+    if (bAccepted) {
+      app->m_settings.bEulaAccepted = TRUE;
+    }
+    else {
+      return -1;
+    }
+  }
 
   HWND hWndMain = CreateWindowEx(0, szPaniViewClassName, szPaniView,
       WS_OVERLAPPEDWINDOW, /* Top-level window */
@@ -156,14 +248,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
       NULL, /* No menu */
       hInstance,
       NULL); /* No extra window data */
+
   if (!hWndMain)
   {
     dwError = GetLastError();
-    PopupError(dwError, NULL);
     assert(FALSE);
+    PopupError(dwError, NULL);
     return -1;
   }
-  assert(hWndMain);
 
   ShowWindow(hWndMain, nCmdShow);
   UpdateWindow(hWndMain); /* Force window contents paint inplace after
@@ -182,6 +274,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   }
 
   CoUninitialize();
+
+  if (!PaniViewApp_SaveSettings(app)) {
+    MessageBox(NULL, L"Unable to save settings data", NULL, MB_OK | MB_ICONERROR);
+  }
 
   /* Application shutdown */
   return (int) msg.wParam;
@@ -256,6 +352,107 @@ void PopupError(DWORD dwError, HWND hParent)
   MessageBox(hParent, lpszMessage, NULL, MB_OK | MB_ICONERROR);
 
   free(lpszMessage);
+}
+
+BOOL PopupEULADialog()
+{
+  HMODULE hMsftEdit = LoadLibrary(L"Msftedit.dll");
+  if (!hMsftEdit)
+    return FALSE;
+
+  int iStatus = DialogBox(g_hInst, MAKEINTRESOURCE(IDD_EULA), NULL,
+      (DLGPROC)EULADlgProc);
+
+  FreeLibrary(hMsftEdit);
+
+  return iStatus == IDOK;
+}
+
+/*
+ *  GetApplicationDataSitePath
+ *  Construct the AppData site string. Usually should be called once.
+ *
+ *  NOTE: The caller manages the memory deallocation
+ */
+BOOL GetApplicationDataSitePath(PWSTR* ppStr)
+{
+  static const WCHAR szDataSiteDir[] = L"Aragajaga\\PaniView";
+
+  HRESULT hr = S_OK;
+  BOOL bStatus = FALSE;
+
+  PWSTR pszAppDataRoot = NULL;
+
+  if (!ppStr) {
+    assert(FALSE);
+    return FALSE;
+  }
+
+  *ppStr = NULL;
+
+  /* Get current user's %APPDATA%\Local path */
+  hr = SHGetKnownFolderPath(&FOLDERID_LocalAppData,
+      KF_FLAG_DEFAULT,
+      NULL, /* No access token, current user's AppData */
+      &pszAppDataRoot);
+  if (FAILED(hr)) {
+    assert(FALSE);
+    PopupError(hr, NULL);
+    goto fail;
+  }
+
+  size_t lenAppDataSite = wcslen(pszAppDataRoot) + ARRAYSIZE(szDataSiteDir) + 1;
+  PWSTR pszAppDataSite = calloc(1, (lenAppDataSite + 1) * sizeof(WCHAR));
+  if (!pszAppDataSite) {
+    assert(FALSE);
+    goto fail;
+  }
+
+  StringCchCopy(pszAppDataSite, lenAppDataSite, pszAppDataRoot);
+  PathCchAppend(pszAppDataSite, lenAppDataSite, szDataSiteDir);
+
+  /* Succeed */
+  bStatus = TRUE;
+  *ppStr = pszAppDataSite;
+
+fail:
+  CoTaskMemFree(pszAppDataRoot);
+
+  if (bStatus) {
+    return bStatus;
+  }
+
+  free(pszAppDataSite);
+  return bStatus;
+}
+
+/*
+ * crc32
+ * Cycle Redundancy Check hashing algorithm
+ */
+unsigned long crc32(unsigned char *data, size_t length)
+{
+  static unsigned long table[256];
+
+  if (!*table) {
+    for (unsigned long i = 0; i < 256; ++i) {
+      unsigned long r = i;
+
+      for (int j = 0; j < 8; ++j) {
+        r = (r & 1 ? 0 : 0xEDB88320UL) ^ r >> 1;
+      }
+
+      table[i] = r ^ 0xFF000000UL;
+    }
+  }
+
+  unsigned int checksum = 0;
+
+  for (size_t i = 0; i < length; ++i) {
+    checksum = table[(unsigned char)(checksum) ^ ((unsigned char *)data)[i]] ^ checksum >> 8;
+  }
+
+  return checksum;
 }
 
 static inline D2D1_MATRIX_3X2_F D2DUtilMatrixIdentity() {
@@ -351,6 +548,190 @@ static inline D2D1_SIZE_F ID2D1Bitmap_GetSize$Fix(ID2D1Bitmap *_this)
   return size;
 }
 
+BOOL Settings_LoadFile(SETTINGS *settings, PWSTR pszPath)
+{
+  if (!(settings && pszPath)) {
+    assert(FALSE);
+    return FALSE;
+  }
+
+  FILE *pfd = _wfopen(pszPath, L"rb");
+  if (!pfd) {
+    return FALSE;
+  }
+
+  BOOL bStatus = FALSE;
+  SETTINGS *tmpCfg = calloc(1, sizeof(SETTINGS));
+  if (tmpCfg) {
+    unsigned char magic[4];
+    fread(magic, sizeof(g_cfgMagic), 1, pfd);
+
+    if (!memcmp(magic, g_cfgMagic, sizeof(g_cfgMagic)))
+    {
+      fseek(pfd, 0, SEEK_SET);
+      fread(tmpCfg, sizeof(SETTINGS), 1, pfd);
+
+      unsigned long fileChecksum = tmpCfg->checksum;
+      tmpCfg->checksum = 0xFFFFFFFFUL;
+      unsigned long calcChecksum = crc32((unsigned char *)tmpCfg, sizeof(SETTINGS));
+      tmpCfg->checksum = fileChecksum;
+
+      if (fileChecksum == calcChecksum) {
+        memcpy(settings, &tmpCfg, sizeof(SETTINGS));
+        bStatus = TRUE;
+      }
+    }
+  }
+
+  free(tmpCfg);
+  fclose(pfd);
+  return bStatus;
+}
+
+BOOL Settings_SaveFile(SETTINGS *settings, PWSTR pszPath)
+{
+  if (!(settings && pszPath)) {
+    return FALSE;
+  }
+
+  FILE *pfd = _wfopen(pszPath, L"wb");
+  if (!pfd) {
+    assert(FALSE);
+    return FALSE;
+  }
+
+  memcpy(&settings->magic, g_cfgMagic, sizeof(g_cfgMagic));
+  settings->checksum = 0xFFFFFFFF;
+  settings->checksum = crc32((unsigned char *)settings, sizeof(SETTINGS));
+
+  fwrite(settings, sizeof(SETTINGS), 1, pfd);
+  fclose(pfd);
+  return TRUE;
+}
+
+BOOL Settings_LoadDefault(SETTINGS *pSettings)
+{
+  if (!pSettings) {
+    return FALSE;
+  }
+
+  ZeroMemory(pSettings, sizeof(SETTINGS));
+  pSettings->bEulaAccepted = FALSE;
+  pSettings->bNaviLoop = TRUE;
+  pSettings->nRendererType = RENDERER_D2D;
+  pSettings->nToolbarTheme = TOOLBARTHEME_DEFAULT_24PX;
+
+  return TRUE;
+}
+
+static inline PANIVIEWAPP *PaniViewApp_GetInstance()
+{
+  static PANIVIEWAPP *s_gApp = NULL;
+
+  if (!s_gApp) {
+    s_gApp = calloc(1, sizeof(PANIVIEWAPP));
+  }
+
+  return s_gApp;
+}
+
+BOOL PaniViewApp_Initialize(PANIVIEWAPP *app)
+{
+  if (!PaniViewApp_LoadSettings(app)) {
+    if (!PaniViewApp_LoadDefaultSettings(app)) {
+      return FALSE;
+    }
+  }
+
+  return TRUE;
+}
+
+PWSTR PaniViewApp_GetAppDataSitePath(PANIVIEWAPP *app) {
+  if (!app->m_appDataSite) {
+    GetApplicationDataSitePath(&app->m_appDataSite);
+  }
+
+  return app->m_appDataSite;
+}
+
+PWSTR PaniViewApp_GetSettingsFilePath(PANIVIEWAPP *app) {
+  static const WCHAR szCfgFileName[] = L"settings.dat";
+
+  PWSTR pszCfgPath = NULL;
+
+  if (!app->m_appCfgPath) {
+    PWSTR pszSite = PaniViewApp_GetAppDataSitePath(app);
+
+    if (pszSite) {
+      size_t lenCfgPath = wcslen(pszSite) + ARRAYSIZE(szCfgFileName) + 1;
+
+      pszCfgPath = calloc(1, lenCfgPath * sizeof(WCHAR));
+      if (pszCfgPath) {
+        StringCchCopy(pszCfgPath, lenCfgPath, pszSite);
+        PathCchAppend(pszCfgPath, lenCfgPath, szCfgFileName);
+      }
+    }
+  }
+
+  return pszCfgPath;
+}
+
+BOOL PaniViewApp_CreateAppDataSite(PANIVIEWAPP *app) {
+  PWSTR pszSite;
+
+  pszSite = PaniViewApp_GetAppDataSitePath(app);
+  if (!pszSite) {
+    return FALSE;
+  }
+
+  /* TODO: MAKE RESEARCH, MAY BE CAPPED AT MAX_PATH */
+  int iStatus = SHCreateDirectoryEx(NULL, (PCWSTR)pszSite, NULL);
+  if (iStatus != ERROR_SUCCESS && iStatus != ERROR_ALREADY_EXISTS) {
+    assert(FALSE);
+    PopupError(iStatus, NULL);
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+BOOL PaniViewApp_LoadSettings(PANIVIEWAPP *app)
+{
+  if (!app) {
+    return FALSE;
+  }
+
+  PWSTR pszCfgPath = PaniViewApp_GetSettingsFilePath(app);
+  if (!pszCfgPath) {
+    return FALSE;
+  }
+
+  return Settings_LoadFile(&app->m_settings, pszCfgPath);
+}
+
+BOOL PaniViewApp_SaveSettings(PANIVIEWAPP *app)
+{
+  if (!app) {
+    return FALSE;
+  }
+
+  PWSTR pszCfgPath = PaniViewApp_GetSettingsFilePath(app);
+  if (!pszCfgPath) {
+    return FALSE;
+  }
+
+  return Settings_SaveFile(&app->m_settings, pszCfgPath);
+}
+
+BOOL PaniViewApp_LoadDefaultSettings(PANIVIEWAPP *app)
+{
+  if (!app) {
+    return FALSE;
+  }
+
+  return Settings_LoadDefault(&app->m_settings);
+}
+
 BOOL PaniView_RegisterClass(HINSTANCE hInstance)
 {
   WNDCLASSEX wcex = { 0 };
@@ -397,7 +778,7 @@ LRESULT CALLBACK PaniView_WndProc(HWND hWnd, UINT message,WPARAM wParam,
    * message macro name, like HANDLE_WM_CREATE. The last parameter is a
    * function callback, other is a common parameters for this message.
    * See MSDN for function declaraction on each specific message.
-   * 
+   *
    */
   switch (message)
   {
@@ -588,8 +969,10 @@ void PaniView_OnCommand(HWND hWnd, int id, HWND hwndCtl, UINT codeNotify)
   switch (id) {
 
     case IDM_FILE_OPEN:
+      {
       SendMessage(wndData->hRenderer, WM_SENDNUDES, 0, 0);
       InvalidateRect(hWnd, NULL, FALSE);
+      }
       break;
 
     case IDM_PREV:
@@ -605,6 +988,16 @@ void PaniView_OnCommand(HWND hWnd, int id, HWND hwndCtl, UINT codeNotify)
     case IDM_FITSIZE:
       SendMessage(wndData->hRenderer, WM_FIT, 0, 0);
       InvalidateRect(hWnd, NULL, FALSE);
+      break;
+
+    case IDM_SETTINGS:
+      DialogBox(g_hInst, MAKEINTRESOURCE(IDD_SETTINGS),
+          hWnd, (DLGPROC)SettingsDlgProc);
+      break;
+
+    case IDM_ABOUT:
+      DialogBox(g_hInst, MAKEINTRESOURCE(IDD_ABOUT),
+          hWnd, (DLGPROC)AboutDlgProc);
       break;
 
     case IDM_FILE_EXIT:
@@ -1319,4 +1712,117 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   }
 
   return TRUE;
+}
+
+INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT message, WPARAM wParam,
+    LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(lParam);
+
+  switch (message)
+  {
+    case WM_NOTIFY:
+      {
+        switch (((LPNMHDR)lParam)->code)
+        {
+          case NM_CLICK:
+          case NM_RETURN:
+            {
+              PNMLINK pNMLink = (PNMLINK)lParam;
+              LITEM item = pNMLink->item;
+
+              if (((LPNMHDR)lParam)->idFrom == IDC_ABOUTTEXT) {
+                ShellExecute(NULL, L"open", item.szUrl, NULL, NULL, SW_SHOW);
+              }
+            }
+            break;
+        }
+      }
+      return TRUE;
+
+    case WM_COMMAND:
+      {
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+          EndDialog(hWnd, 0);
+          return TRUE;
+        }
+      }
+      break;
+  }
+
+  return FALSE;
+}
+
+INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
+    LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(lParam);
+
+  switch (message)
+  {
+    case WM_INITDIALOG:
+      {
+        HWND hList = GetDlgItem(hWnd, IDC_NAVIASSOCLIST);
+        ListView_SetExtendedListViewStyle(hList, LVS_EX_DOUBLEBUFFER |
+            LVS_EX_FULLROWSELECT | LVS_EX_JUSTIFYCOLUMNS);
+
+        LVCOLUMN lvc = { 0 };
+        int iCol = 0;
+
+        lvc.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
+        lvc.fmt = LVCFMT_LEFT;
+        lvc.cx = 100;
+
+        lvc.pszText = L"Extension";
+        lvc.iSubItem = iCol;
+        ListView_InsertColumn(hList, iCol++, &lvc);
+
+        lvc.pszText = L"Type";
+        lvc.iSubItem = iCol;
+        ListView_InsertColumn(hList, iCol++, &lvc);
+      }
+      return TRUE;
+
+    case WM_COMMAND:
+      {
+        if (LOWORD(wParam) == IDC_CLEARSETTINGS) {
+          int iAnswer;
+          iAnswer = MessageBox(hWnd, L"Clear all settings?", L"Confirmation",
+              MB_YESNO | MB_ICONQUESTION);
+
+          if (iAnswer == IDYES) {
+            MessageBox(hWnd, L"Cleared", L"Info", MB_ICONINFORMATION);
+          }
+        }
+        else if (LOWORD(wParam) == IDOK ||
+            LOWORD(wParam) == IDCANCEL)
+        {
+          EndDialog(hWnd, 0);
+          return TRUE;
+        }
+      }
+      break;
+  }
+
+  return FALSE;
+}
+
+INT_PTR CALLBACK EULADlgProc(HWND hWnd, UINT message, WPARAM wParam,
+    LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(lParam);
+
+  switch (message)
+  {
+    case WM_COMMAND:
+      {
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+          EndDialog(hWnd, LOWORD(wParam));
+          return TRUE;
+        }
+      }
+      break;
+  }
+
+  return FALSE;
 }

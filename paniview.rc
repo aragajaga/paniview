@@ -21,6 +21,103 @@ IDB_TOOLBARSTRIPDISABLED16 BITMAP "res/toolbar_disabled@16px.bmp"
 IDB_TOOLBARSTRIPDISABLED24 BITMAP "res/toolbar_disabled@24px.bmp"
 IDB_TOOLBARSTRIPDISABLED32 BITMAP "res/toolbar_disabled@32px.bmp"
 
+/*
+ * DLU (dialog unit) defined as average A-Za-z glyph divided by 4x8
+ *
+ * So, dialog and static controls heights and margins will be calculated
+ * like that:
+ *
+ *    number of lines * 8
+ *
+ * MS Dialog UX Reference:
+ * https://web.archive.org/web/20140320155753/http://msdn.microsoft.com/en-us/library/aa511279.aspx
+ */
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 240
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION |
+    WS_SYSMENU
+CAPTION "Settings"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+{
+    DEFPUSHBUTTON "Cancel",IDCANCEL,263,219,50,14
+    PUSHBUTTON    "OK",IDOK,209,219,50,14
+
+    CONTROL       "Show file name in title",IDC_TITLEBAR_SHOW_PATH,"Button",
+        BS_AUTOCHECKBOX | WS_TABSTOP,7,7,85,10
+    CONTROL       "Full path",IDC_TITLEBAR_SPEC_FULLPATH,"Button",
+        BS_AUTORADIOBUTTON,16,21,43,10
+    CONTROL       "Only file name",IDC_TITLEBAR_SPEC_FILENAME,"Button",
+        BS_AUTORADIOBUTTON,16,35,61,10
+
+    CONTROL       "Loop directory navigation",IDC_LOOPNAVIGATION,"Button",
+        BS_AUTOCHECKBOX | WS_TABSTOP,7,49,97,10
+    CONTROL       "Process any file, guess format by it's content",
+        IDC_PROCESSANYFILE, "Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,63,160,10
+
+    LTEXT         "Directory navigation associations:",IDC_STATIC,7,77,109,8
+    CONTROL       "",IDC_NAVIASSOCLIST,"SysListView32",LVS_REPORT |
+        LVS_ALIGNLEFT | WS_BORDER | WS_TABSTOP,7,88,134,113
+    PUSHBUTTON    "Add...",IDC_NAVIASSOC_ADD,91,206,50,14
+    PUSHBUTTON    "Remove",IDC_NAVIASSOC_REM,40,207,50,14
+
+    LTEXT         "Render backend:",IDC_STATIC,190,7,56,8
+    COMBOBOX      IDC_BACKENDSEL,190,18,75,30,CBS_DROPDOWN | CBS_SORT |
+        WS_VSCROLL | WS_TABSTOP
+    LTEXT         "Hardware Acceleration",IDC_STATIC,190,41,74,8
+    LTEXT         "Arbitrary Rotation",IDC_STATIC,190,53,59,8
+
+    LTEXT         "Toolbar icons:",IDC_STATIC,190,68,46,8
+    COMBOBOX      IDC_TOOLBARICONSEL,190,79,75,30,CBS_DROPDOWN | CBS_SORT |
+        WS_VSCROLL | WS_TABSTOP
+    CONTROL       IDB_TOOLBARSTRIPHOT32,IDC_STATIC,"Static",SS_BITMAP,
+        190,119,128,20
+
+    PUSHBUTTON    "Reset settings",IDC_CLEARSETTINGS,190,174,116,14
+}
+
+IDD_ABOUT DIALOGEX 0, 0, 215, 107
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | DS_FIXEDSYS | WS_POPUP | WS_CAPTION |
+    WS_SYSMENU
+CAPTION "About"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+{
+  CONTROL"PaniView\r\n"
+      "A lightweight image viewer for Windows\r\n"
+      "\r\n"
+      "Author:\r\n"
+      "Philosoph228 <<a href=""mailto:philosoph228@gmail.com"">philosoph228@gmail.com</a>>"
+      "\r\n"
+      "\r\n"
+      "Copyright \251 2022 Aragajaga\r\n"
+      "\r\n"
+      "<a href=""https://github.com/Aragajaga/paniview"">GitHub</a> | "
+      "<a href=""https://github.com/Aragajaga/paniview/releases"">Check for newer releases</a> | "
+      "<a href=""https://github.com/Aragajaga/paniview/issues"">Report an issue</a>",
+      IDC_ABOUTTEXT,"SysLink",WS_TABSTOP,35,7,173,72
+  DEFPUSHBUTTON "OK",IDOK,158,86,50,14
+  ICON  IDI_ICON,IDC_STATIC,7,7,21,20,SS_ICON
+}
+
+IDD_EULA DIALOGEX 0, 0, 320, 240
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION |
+    WS_SYSMENU | WS_THICKFRAME
+CAPTION "End-User License Agreement"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+{
+    PUSHBUTTON "Decline",IDCANCEL,209,219,50,14
+    DEFPUSHBUTTON "Accept",IDOK,263,219,50,14
+    CONTROL       "THE SOFTWARE IS PROVIDED ""AS IS"", WITHOUT WARRANTY OF ANY "
+        "KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES "
+        "OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND "
+        "NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS "
+        "BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN "
+        "ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN "
+        "CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE "
+        "SOFTWARE.",
+        IDC_STATIC,"RichEdit50W",ES_MULTILINE | WS_BORDER | WS_TABSTOP,
+        7,7,306,209
+}
+
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "res/paniview.exe.manifest"
 
 VS_VERSION_INFO VERSIONINFO
@@ -76,7 +173,23 @@ IDM_MAIN MENU
   POPUP "&File"
   {
     MENUITEM "&Open", IDM_FILE_OPEN
-    MENUITEM "&Exit", IDM_FILE_EXIT
+    MENUITEM SEPARATOR
+    MENUITEM "E&xit\tAlt+F4", IDM_FILE_EXIT
+  }
+
+  POPUP "&View"
+  {
+    MENUITEM "&Next", IDM_NEXT
+    MENUITEM "&Previous", IDM_PREV
+    MENUITEM SEPARATOR
+    MENUITEM "&Zoom In", IDM_ZOOMIN
+    MENUITEM "Zoom &Out", IDM_ZOOMOUT
+    MENUITEM SEPARATOR
+    MENUITEM "&Settings", IDM_SETTINGS
+  }
+
+  POPUP "&Help"
+  {
+    MENUITEM "&About", IDM_ABOUT
   }
 }
-
