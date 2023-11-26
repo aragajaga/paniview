@@ -171,6 +171,8 @@ void RenderCtl_OnFitCmd(HWND);
 HRESULT RenderCtl_CreateDeviceResources(LPRENDERCTLDATA);
 void RenderCtl_DiscardDeviceResources(LPRENDERCTLDATA);
 HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA, LPWSTR);
+HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA, PWSTR, FILE*);
+HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA, LPWSTR);
 
 void InvokeFileOpenDialog(LPWSTR*);
 
@@ -577,7 +579,7 @@ BOOL Settings_LoadFile(SETTINGS *settings, PWSTR pszPath)
       tmpCfg->checksum = fileChecksum;
 
       if (fileChecksum == calcChecksum) {
-        memcpy(settings, &tmpCfg, sizeof(SETTINGS));
+        memcpy(settings, tmpCfg, sizeof(SETTINGS));
         bStatus = TRUE;
       }
     }
@@ -1464,11 +1466,13 @@ void RenderCtl_DiscardDeviceResources(LPRENDERCTLDATA wndData)
 }
 
 COMDLG_FILTERSPEC c_rgReadTypes[] = {
-  {L"Common picture file formats", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif"},
+  {L"Common picture file formats", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.pgm"},
   {L"Windows/OS2 Bitmap", L"*.bmp"},
   {L"Portable Network Graphics", L"*.png"},
   {L"Joint Picture Expert Group", L"*.jpg;*.jpeg"},
   {L"CompuServe Graphics Interchange Format", L"*.gif"},
+  {L"Portable Graymap Format", L"*.pgm"},
+  {L"All files", L"*.*"},
 };
 
 void InvokeFileOpenDialog(LPWSTR *szPath)
@@ -1522,6 +1526,140 @@ error:
 }
 
 HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA wndData, LPWSTR pszPath)
+{
+  FILE *pf = NULL;
+
+  pf = _wfopen(pszPath, L"rb");
+  if (!pf)
+  {
+    MessageBox(NULL, L"Cound not open file", NULL, MB_OK | MB_ICONERROR);
+    return E_FAIL;
+  }
+
+  const char pgmMagic[] = { 'P', '5' };
+
+  char magic[2];
+  fread(magic, sizeof(magic), 1, pf);
+
+  HRESULT hResult = E_FAIL;
+  if (!memcmp(magic, pgmMagic, sizeof(magic)))
+  {
+    hResult = RenderCtl_LoadFromFilePGM(wndData, pszPath, pf);
+  }
+  else {
+    hResult = RenderCtl_LoadFromFileWIC(wndData, pszPath);
+  }
+
+  fclose(pf);
+
+  return hResult;
+}
+
+HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA wndData, PWSTR pszPath, FILE *pf)
+{
+  HRESULT hr = E_FAIL;
+
+  IWICBitmap *pIWICBitmap = NULL;
+  ID2D1Bitmap *pD2DBitmap = NULL;
+  IWICFormatConverter *pConvertedSourceBitmap = NULL;
+
+  int width;
+  int height;
+  int depth;
+  fscanf(pf, "%d %d\n%d\n", &width, &height, &depth);
+
+  if (depth != 255) {
+    return E_FAIL;
+  }
+
+  size_t dataLength = (size_t)width * height;
+  unsigned char *data = (unsigned char *)calloc(dataLength, 1);
+  fread(data, dataLength, 1, pf);
+
+  /* Init WIC Bitmap with grayscale image data */
+  hr = wndData->m_pIWICFactory->lpVtbl->CreateBitmapFromMemory(
+      wndData->m_pIWICFactory,
+      width,
+      height,
+      &GUID_WICPixelFormat8bppGray,
+      width,
+      width * height,
+      (BYTE*)data,
+      &pIWICBitmap
+    );
+
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  /* Convert the image to 32bppPBGRA */
+  hr = wndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
+      wndData->m_pIWICFactory,
+      &pConvertedSourceBitmap);
+
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  hr = pConvertedSourceBitmap->lpVtbl->Initialize(
+      pConvertedSourceBitmap,
+      (IWICBitmapSource *)pIWICBitmap, /* Input bitmap to convert */
+      &GUID_WICPixelFormat32bppPBGRA, /* Destination pixel format */
+      WICBitmapDitherTypeNone,  /* No dither pattern */
+      NULL, /* Do not specify particular color pallete */
+      0.f,  /* Alpha threshold */
+      WICBitmapPaletteTypeCustom);  /* Palette transform type */
+
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  hr = wndData->m_pRenderTarget->lpVtbl->Base.CreateBitmapFromWicBitmap(
+      (ID2D1RenderTarget *)wndData->m_pRenderTarget,
+      (IWICBitmapSource *)pConvertedSourceBitmap,
+      NULL,
+      &pD2DBitmap);
+
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+
+  }
+
+  /* Done successfully. Actually do the changes into structure. */
+
+  /* Release previously selected bitmaps */
+  SAFE_RELEASE(wndData->m_pConvertedSourceBitmap);
+  SAFE_RELEASE(wndData->m_pD2DBitmap);
+
+  /* Set current bitmaps */
+  wndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
+  wndData->m_pD2DBitmap = pD2DBitmap;
+
+  /* Prevent freeing succeed resources */
+  pConvertedSourceBitmap = NULL;
+  pD2DBitmap = NULL;
+
+  /* Copy path to window data */
+  StringCchCopy(wndData->szPath, MAX_PATH, pszPath);
+
+fail:
+  SAFE_RELEASE(pIWICBitmap);
+  SAFE_RELEASE(pConvertedSourceBitmap);
+  SAFE_RELEASE(pD2DBitmap);
+  free(data);
+
+  return hr;
+}
+
+HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
 {
   HRESULT hr = S_OK;
 
