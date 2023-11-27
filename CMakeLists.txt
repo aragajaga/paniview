@@ -49,7 +49,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE _UNICODE UNICODE)
 target_link_options(${PROJECT_NAME} PRIVATE -municode)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Werror -pedantic)
-target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 pathcch d2d1)
+target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 shlwapi pathcch d2d1)
 
 if(BUILD_TESTING)
   add_subdirectory(test)

@@ -41,6 +41,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 
+#include <shlwapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <strsafe.h>

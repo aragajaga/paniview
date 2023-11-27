@@ -263,6 +263,28 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   UpdateWindow(hWndMain); /* Force window contents paint inplace after
                              creating*/
 
+  // Open file from shell command
+  {
+    PathUnquoteSpaces(lpCmdLine);
+
+    LPMAINFRAMEDATA pMainWndData = NULL;
+    HWND hRenderer;
+
+    pMainWndData = (LPMAINFRAMEDATA)GetWindowLongPtr(hWndMain, 0);
+
+    if (pMainWndData) {
+      hRenderer = pMainWndData->hRenderer;
+
+      if (hRenderer && IsWindow(hRenderer)) {
+        LPRENDERCTLDATA pRenderCtlData = NULL;
+        pRenderCtlData = (LPRENDERCTLDATA)GetWindowLongPtr(hRenderer, 0);
+
+        RenderCtl_LoadFromFile(pRenderCtlData, lpCmdLine);
+        InvalidateRect(hWndMain, NULL, FALSE);
+      }
+    }
+  }
+
   /*
    * Application loop
    *
