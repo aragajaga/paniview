@@ -55,7 +55,8 @@ typedef struct _tagRENDERCTLDATA {
 
 enum {
   RENDERER_D2D = 1,
-  RENDERER_GDI = 2,
+  RENDERER_OPENGL = 2,
+  RENDERER_GDI = 3,
 };
 
 enum {
@@ -68,6 +69,8 @@ enum {
   TOOLBARTHEME_DEFAULT_16PX = 1,
   TOOLBARTHEME_DEFAULT_24PX = 2,
   TOOLBARTHEME_DEFAULT_32PX = 3,
+  TOOLBARTHEME_MODERN_24PX = 4,
+  TOOLBARTHEME_FUGUEICONS_24PX = 5,
 };
 
 enum {
@@ -125,14 +128,6 @@ static inline D2D1_MATRIX_3X2_F D2DUtilMatrixMultiply(D2D1_MATRIX_3X2_F *,
 static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF, float);
 static inline D2D1_COLOR_F D2DColorFromRGB(COLORREF);
 
-/* COM aggregate return types fixes */
-typedef VOID(*fnID2D1HwndRenderTarget_GetSize)(ID2D1RenderTarget *,
-    D2D1_SIZE_F *);
-typedef VOID(*fnID2D1Bitmap_GetSize)(ID2D1Bitmap *, D2D1_SIZE_F *);
-static inline D2D1_SIZE_F ID2D1HwndRenderTarget_GetSize$Fix(
-    ID2D1HwndRenderTarget *);
-static inline D2D1_SIZE_F ID2D1Bitmap_GetSize$Fix(ID2D1Bitmap *);
-
 BOOL Settings_LoadFile(SETTINGS *, PWSTR);
 BOOL Settings_SaveFile(SETTINGS *, PWSTR);
 BOOL Settings_LoadDefault(SETTINGS *);
@@ -140,7 +135,7 @@ BOOL Settings_LoadDefault(SETTINGS *);
 /* Application object methods forward declarations */
 static inline PANIVIEWAPP *PaniViewApp_GetInstance();
 BOOL PaniViewApp_Initialize(PANIVIEWAPP *);
-PWSTR PaniVewApp_GetAppDataSitePath(PANIVIEWAPP *);
+PWSTR PaniViewApp_GetAppDataSitePath(PANIVIEWAPP *);
 PWSTR PaniViewApp_GetSettingsFilePath(PANIVIEWAPP *);
 BOOL PaniViewApp_CreateAppDataSite(PANIVIEWAPP *);
 BOOL PaniViewApp_LoadSettings(PANIVIEWAPP *);
@@ -174,7 +169,7 @@ HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA, LPWSTR);
 HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA, PWSTR, FILE*);
 HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA, LPWSTR);
 
-void InvokeFileOpenDialog(LPWSTR*);
+HRESULT InvokeFileOpenDialog(LPWSTR*);
 
 BOOL NextFileInDir(LPRENDERCTLDATA, BOOL, LPWSTR);
 
@@ -232,17 +227,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   InitInstance(hInstance); /* Initialize the application's instance — register
                               classes, lock single instance mutexes, etc. */
 
-  if (!app->m_settings.bEulaAccepted)
-  {
-    BOOL bAccepted = PopupEULADialog();
-    if (bAccepted) {
-      app->m_settings.bEulaAccepted = TRUE;
-    }
-    else {
-      return -1;
-    }
-  }
-
   HWND hWndMain = CreateWindowEx(0, szPaniViewClassName, szPaniView,
       WS_OVERLAPPEDWINDOW, /* Top-level window */
       CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, /* Use default position and size */
@@ -265,23 +249,30 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
   // Open file from shell command
   {
-    PathUnquoteSpaces(lpCmdLine);
+    int nArgs = 0;
+    PWSTR *ppszArgv = CommandLineToArgvW(lpCmdLine, &nArgs);
 
-    LPMAINFRAMEDATA pMainWndData = NULL;
-    HWND hRenderer;
+    if (nArgs > 1)
+    {
+        PathUnquoteSpaces(ppszArgv[0]);
 
-    pMainWndData = (LPMAINFRAMEDATA)GetWindowLongPtr(hWndMain, 0);
+        LPMAINFRAMEDATA pMainWndData = NULL;
+        pMainWndData = (LPMAINFRAMEDATA)GetWindowLongPtr(hWndMain, 0);
 
-    if (pMainWndData) {
-      hRenderer = pMainWndData->hRenderer;
+        if (pMainWndData)
+        {
+            HWND hRenderer;
+            hRenderer = pMainWndData->hRenderer;
 
-      if (hRenderer && IsWindow(hRenderer)) {
-        LPRENDERCTLDATA pRenderCtlData = NULL;
-        pRenderCtlData = (LPRENDERCTLDATA)GetWindowLongPtr(hRenderer, 0);
+            if (hRenderer && IsWindow(hRenderer))
+            {
+                LPRENDERCTLDATA pRenderCtlData = NULL;
+                pRenderCtlData = (LPRENDERCTLDATA)GetWindowLongPtr(hRenderer, 0);
 
-        RenderCtl_LoadFromFile(pRenderCtlData, lpCmdLine);
-        InvalidateRect(hWndMain, NULL, FALSE);
-      }
+                RenderCtl_LoadFromFile(pRenderCtlData, ppszArgv[0]);
+                InvalidateRect(hWndMain, NULL, FALSE);
+            }
+        }
     }
   }
 
@@ -530,48 +521,6 @@ static inline D2D1_COLOR_F D2DColorFromRGB(COLORREF color)
   return D2DColorFromRGBAndAlpha(color, 1.f);
 }
 
-/* It seems that MS had wrecked an agregate returns for all COM methods called
- * via C. 🙄
- *
- * https://blog.airesoft.co.uk/2014/12/direct2d-scene-of-the-accident/
- * https://sourceforge.net/p/mingw-w64/mailman/message/36859011/
- * https://github.com/fanc999/d2d-sample-mostly-c/issues/1
- *
- * Hacking it. (Thanx @jacoblusk)
- *
- * Also, this need test on 32bit os because of different calling conventions.
- * (it is trivial for x64 to have a single __fastcall)
- */
-
-static inline D2D1_SIZE_F ID2D1HwndRenderTarget_GetSize$Fix(
-    ID2D1HwndRenderTarget *_this)
-{
-  /* It is normal for compilers to notify about undesirable implicit
-   * conversions between non-compatible pointer types, but here this is
-   * a planned scenario. So we do it through a pointer to pointer
-   * dereference to suppress compiler warnings.
-   */
-  D2D1_SIZE_F size;
-
-  fnID2D1HwndRenderTarget_GetSize fnGetSize =
-    *(fnID2D1HwndRenderTarget_GetSize *)
-    &((ID2D1RenderTarget *) _this)->lpVtbl->GetSize;
-  (*fnGetSize)((ID2D1RenderTarget *)_this, &size);
-
-  return size;
-}
-
-static inline D2D1_SIZE_F ID2D1Bitmap_GetSize$Fix(ID2D1Bitmap *_this)
-{
-  D2D1_SIZE_F size;
-
-  fnID2D1Bitmap_GetSize fnGetSize =
-    *(fnID2D1Bitmap_GetSize *) &_this->lpVtbl->GetSize;
-  (*fnGetSize)(_this, &size);
-
-  return size;
-}
-
 BOOL Settings_LoadFile(SETTINGS *settings, PWSTR pszPath)
 {
   if (!(settings && pszPath)) {
@@ -662,7 +611,24 @@ static inline PANIVIEWAPP *PaniViewApp_GetInstance()
 BOOL PaniViewApp_Initialize(PANIVIEWAPP *app)
 {
   if (!PaniViewApp_LoadSettings(app)) {
-    if (!PaniViewApp_LoadDefaultSettings(app)) {
+    if (PaniViewApp_LoadDefaultSettings(app))
+    {
+      if (!app->m_settings.bEulaAccepted)
+      {
+        BOOL bAccepted = PopupEULADialog();
+        if (bAccepted) {
+            app->m_settings.bEulaAccepted = TRUE;
+        }
+        else {
+            return FALSE;
+        }
+      }
+
+      PWSTR pszDataPath = PaniViewApp_GetAppDataSitePath(app);
+      SHCreateDirectoryEx(app->hWndMain, pszDataPath, NULL);
+      PaniViewApp_SaveSettings(app);
+    }
+    else {
       return FALSE;
     }
   }
@@ -1149,7 +1115,7 @@ void RenderCtl_OnSize(HWND hWnd, UINT state, int cx, int cy)
   assert(wndData);
 
   if (wndData->m_pRenderTarget) {
-    wndData->m_pRenderTarget->lpVtbl->Resize(wndData->m_pRenderTarget,
+    dxID2D1HwndRenderTarget_Resize(wndData->m_pRenderTarget,
         &(D2D1_SIZE_U){ cx, cy });
   }
 }
@@ -1164,24 +1130,19 @@ void RenderCtl_OnPaint(HWND hWnd)
   hr = RenderCtl_CreateDeviceResources(wndData);
   if (SUCCEEDED(hr)) {
 
-    wndData->m_pRenderTarget->lpVtbl->Base.BeginDraw(
-        (ID2D1RenderTarget *)wndData->m_pRenderTarget);
+    dxID2D1RenderTarget_BeginDraw((ID2D1RenderTarget *)wndData->m_pRenderTarget);
 
     D2D1_MATRIX_3X2_F mat = D2DUtilMatrixIdentity();
 
-    wndData->m_pRenderTarget->lpVtbl->Base.SetTransform(
-        (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-        &mat);
+    dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget *)wndData->m_pRenderTarget, &mat);
 
     D2D1_COLOR_F clearColor = D2DColorFromRGB(RGB(0xFF, 0xFF, 0xFF));
 
-    wndData->m_pRenderTarget->lpVtbl->Base.Clear(
-        (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-        &clearColor);
+    dxID2D1RenderTarget_Clear((ID2D1RenderTarget *)wndData->m_pRenderTarget, &clearColor);
 
     /* Retrieve the size of the drawing area. */
     D2D1_SIZE_F rtSize;
-    rtSize = ID2D1HwndRenderTarget_GetSize$Fix(wndData->m_pRenderTarget);
+    rtSize = dxID2D1HwndRenderTarget_GetSize(wndData->m_pRenderTarget);
 
     /* Draw a grid background by using a loop and the render target's DrawLine
      * method to draw a series of lines. */
@@ -1201,11 +1162,12 @@ void RenderCtl_OnPaint(HWND hWnd)
      *  If so, re-create it from the source bitmap */
     if (wndData->m_pConvertedSourceBitmap && !wndData->m_pD2DBitmap)
     {
-      wndData->m_pRenderTarget->lpVtbl->Base.CreateBitmapFromWicBitmap(
+      dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
           (ID2D1RenderTarget *)wndData->m_pRenderTarget,
           (IWICBitmapSource *)wndData->m_pConvertedSourceBitmap,
-          NULL, /* No bitmap properties */
-          &wndData->m_pD2DBitmap);
+          NULL,
+          &wndData->m_pD2DBitmap
+      );
     }
 
     /* Draw an image and scale it to the current window size */
@@ -1216,7 +1178,7 @@ void RenderCtl_OnPaint(HWND hWnd)
       D2D1_MATRIX_3X2_F mat;
 
       D2D1_SIZE_F bmpSize;
-      bmpSize = ID2D1Bitmap_GetSize$Fix(wndData->m_pD2DBitmap);
+      bmpSize = dxID2D1Bitmap_GetSize(wndData->m_pD2DBitmap);
 
       if (wndData->bFit) {
         if (bmpSize.width > rtSize.width) {
@@ -1242,15 +1204,14 @@ void RenderCtl_OnPaint(HWND hWnd)
 
       mat = D2DUtilMatrixMultiply(&matAnchor, &matPosition);
 
-      wndData->m_pRenderTarget->lpVtbl->Base.SetTransform(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget, &mat);
+      dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget *)wndData->m_pRenderTarget, &mat);
 
       D2D1_RECT_F imgRect = {
         0.0f, 0.0f,
         bmpSize.width, bmpSize.height
       };
 
-      wndData->m_pRenderTarget->lpVtbl->Base.DrawBitmap(
+      dxID2D1RenderTarget_DrawBitmap(
           (ID2D1RenderTarget *)wndData->m_pRenderTarget,
           wndData->m_pD2DBitmap,
           &imgRect, /* Destination rectangle */
@@ -1318,10 +1279,7 @@ void RenderCtl_OnPaint(HWND hWnd)
         NULL);
 #endif /* if 0 */
 
-    hr = wndData->m_pRenderTarget->lpVtbl->Base.EndDraw(
-        (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-        NULL,
-        NULL);
+    hr = dxID2D1RenderTarget_EndDraw((ID2D1RenderTarget *)wndData->m_pRenderTarget, NULL, NULL);
     if (hr == (HRESULT)D2DERR_RECREATE_TARGET) {
       hr = S_OK;
       RenderCtl_DiscardDeviceResources(wndData);
@@ -1339,13 +1297,15 @@ void RenderCtl_OnSendNudes(HWND hWnd)
   assert(wndData);
 
   LPWSTR szFilePath;
-  InvokeFileOpenDialog(&szFilePath);
+  hr = InvokeFileOpenDialog(&szFilePath);
+  if (SUCCEEDED(hr))
+  {
+    hr = RenderCtl_LoadFromFile(wndData, szFilePath);
 
-  hr = RenderCtl_LoadFromFile(wndData, szFilePath);
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
+    if (FAILED(hr)) {
+      PopupError(hr, NULL);
+      assert(FALSE);
+    }
   }
 }
 
@@ -1437,11 +1397,12 @@ HRESULT RenderCtl_CreateDeviceResources(LPRENDERCTLDATA wndData)
     rtHwndProp.presentOptions = D2D1_PRESENT_OPTIONS_NONE;
 
     /* Create a Direct2D render target */
-    hr = wndData->m_pD2DFactory->lpVtbl->CreateHwndRenderTarget(
+    hr = dxID2D1Factory_CreateHwndRenderTarget(
         wndData->m_pD2DFactory,
         &rtProp,
         &rtHwndProp,
-        &wndData->m_pRenderTarget);
+        &wndData->m_pRenderTarget
+    );
 
     /*
      * Code from D2D Drawing demo
@@ -1497,7 +1458,7 @@ COMDLG_FILTERSPEC c_rgReadTypes[] = {
   {L"All files", L"*.*"},
 };
 
-void InvokeFileOpenDialog(LPWSTR *szPath)
+HRESULT InvokeFileOpenDialog(LPWSTR *szPath)
 {
   HRESULT hr = S_OK;
 
@@ -1521,10 +1482,15 @@ void InvokeFileOpenDialog(LPWSTR *szPath)
   }
 
   hr = pFileDialog->lpVtbl->Show(pFileDialog, NULL);
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(hr);
-    goto error;
+  if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+  {
+      goto error;
+  }
+  else if (FAILED(hr))
+  {
+      PopupError(hr, NULL);
+      assert(hr);
+      goto error;
   }
 
   hr = pFileDialog->lpVtbl->GetResult(pFileDialog, &pShellItemResult);
@@ -1545,6 +1511,8 @@ void InvokeFileOpenDialog(LPWSTR *szPath)
 error:
   SAFE_RELEASE(pShellItemResult);
   SAFE_RELEASE(pFileDialog);
+
+  return hr;
 }
 
 HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA wndData, LPWSTR pszPath)
@@ -1642,11 +1610,12 @@ HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA wndData, PWSTR pszPath, FILE *
     goto fail;
   }
 
-  hr = wndData->m_pRenderTarget->lpVtbl->Base.CreateBitmapFromWicBitmap(
+  hr = dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
       (ID2D1RenderTarget *)wndData->m_pRenderTarget,
       (IWICBitmapSource *)pConvertedSourceBitmap,
       NULL,
-      &pD2DBitmap);
+      &pD2DBitmap
+  );
 
   if (FAILED(hr)) {
     PopupError(hr, NULL);
@@ -1740,11 +1709,12 @@ HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
     goto fail;
   }
 
-  hr = wndData->m_pRenderTarget->lpVtbl->Base.CreateBitmapFromWicBitmap(
+  hr = dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
       (ID2D1RenderTarget *)wndData->m_pRenderTarget,
       (IWICBitmapSource *)pConvertedSourceBitmap,
       NULL,
-      &pD2DBitmap);
+      &pD2DBitmap
+  );
 
   if (FAILED(hr)) {
     PopupError(hr, NULL);
@@ -1874,6 +1844,8 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   return TRUE;
 }
 
+PWSTR g_pszAboutString;
+
 INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT message, WPARAM wParam,
     LPARAM lParam)
 {
@@ -1881,6 +1853,26 @@ INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT message, WPARAM wParam,
 
   switch (message)
   {
+    case WM_INITDIALOG:
+      {
+        HINSTANCE hInstance = GetModuleHandle(NULL);
+
+        HRSRC hResInfo = FindResource(hInstance, MAKEINTRESOURCE(ID_ABOUT_TEXT), RT_RCDATA);
+        HGLOBAL hGlob = LoadResource(hInstance, hResInfo);
+        DWORD dwSize = SizeofResource(hInstance, hResInfo);
+
+        const char* pszText = LockResource(hGlob);
+
+        int len = MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, NULL, 0);
+        g_pszAboutString = calloc(len, len * sizeof(WCHAR));
+
+        MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, g_pszAboutString, len);
+        SetDlgItemText(hWnd, IDC_ABOUTTEXT, g_pszAboutString);
+
+        FreeResource(hResInfo);
+      }
+      break;
+
     case WM_NOTIFY:
       {
         switch (((LPNMHDR)lParam)->code)
@@ -1904,6 +1896,7 @@ INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT message, WPARAM wParam,
       {
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
           EndDialog(hWnd, 0);
+          free(g_pszAboutString);
           return TRUE;
         }
       }
@@ -1922,6 +1915,63 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
   {
     case WM_INITDIALOG:
       {
+        PANIVIEWAPP *pApp = PaniViewApp_GetInstance();
+        SETTINGS *pSettings = &pApp->m_settings;
+
+        // Load renderer combo box strings
+        int nItem;
+        HWND hBackendSel = GetDlgItem(hWnd, IDC_BACKENDSEL);
+
+        nItem = ComboBox_AddString(hBackendSel, L"Direct2D (Default)");
+        ComboBox_SetItemData(hBackendSel, nItem, (LPARAM) RENDERER_D2D);
+
+        nItem = ComboBox_AddString(hBackendSel, L"OpenGL");
+        ComboBox_SetItemData(hBackendSel, nItem, (LPARAM) RENDERER_OPENGL);
+
+        nItem = ComboBox_AddString(hBackendSel, L"GDI");
+        ComboBox_SetItemData(hBackendSel, nItem, (LPARAM) RENDERER_GDI);
+
+        int nCurSel = 0;
+        for (int i = 0; i < ComboBox_GetCount(hBackendSel); ++i)
+        {
+          int rendererType = (int) ComboBox_GetItemData(hBackendSel, i);
+          if (rendererType == pSettings->nRendererType)
+          {
+            nCurSel = i;
+            break;
+          }
+        }
+
+        ComboBox_SetCurSel(hBackendSel, nCurSel);
+
+        // Load toolbar theme combo box
+        {
+          HWND hToolbarIconSel = GetDlgItem(hWnd, IDC_TOOLBARICONSEL); 
+
+          int nItem;
+          nItem = ComboBox_AddString(hToolbarIconSel, L"Classic 16px");
+          ComboBox_SetItemData(hToolbarIconSel, nItem,
+              (LPARAM) TOOLBARTHEME_DEFAULT_16PX);
+
+          nItem = ComboBox_AddString(hToolbarIconSel, L"Classic 24px (Default)");
+          ComboBox_SetItemData(hToolbarIconSel, nItem,
+              (LPARAM) TOOLBARTHEME_DEFAULT_24PX);
+
+          nItem = ComboBox_AddString(hToolbarIconSel, L"Classic 32px");
+          ComboBox_SetItemData(hToolbarIconSel, nItem,
+              (LPARAM) TOOLBARTHEME_DEFAULT_32PX);
+
+          nItem = ComboBox_AddString(hToolbarIconSel, L"Modern");
+          ComboBox_SetItemData(hToolbarIconSel, nItem,
+              (LPARAM) TOOLBARTHEME_MODERN_24PX);
+
+          nItem = ComboBox_AddString(hToolbarIconSel, L"Fugue Icons");
+          ComboBox_SetItemData(hToolbarIconSel, nItem,
+              (LPARAM) TOOLBARTHEME_FUGUEICONS_24PX);
+        }
+
+
+        // Initialize file association listview
         HWND hList = GetDlgItem(hWnd, IDC_NAVIASSOCLIST);
         ListView_SetExtendedListViewStyle(hList, LVS_EX_DOUBLEBUFFER |
             LVS_EX_FULLROWSELECT | LVS_EX_JUSTIFYCOLUMNS);
@@ -1957,6 +2007,14 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
         else if (LOWORD(wParam) == IDOK ||
             LOWORD(wParam) == IDCANCEL)
         {
+          PANIVIEWAPP *pApp = PaniViewApp_GetInstance();
+          SETTINGS *pSettings = &pApp->m_settings;
+
+          HWND hRendererSel = GetDlgItem(hWnd, IDC_BACKENDSEL);
+          int nCurSel = ComboBox_GetCurSel(hRendererSel);
+          int rendererType = (int) ComboBox_GetItemData(hRendererSel, nCurSel);
+          pSettings->nRendererType = rendererType;
+
           EndDialog(hWnd, 0);
           return TRUE;
         }
@@ -1967,6 +2025,8 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
   return FALSE;
 }
 
+PWSTR g_pszEULAText;
+
 INT_PTR CALLBACK EULADlgProc(HWND hWnd, UINT message, WPARAM wParam,
     LPARAM lParam)
 {
@@ -1974,10 +2034,40 @@ INT_PTR CALLBACK EULADlgProc(HWND hWnd, UINT message, WPARAM wParam,
 
   switch (message)
   {
+    case WM_INITDIALOG:
+      {
+        HINSTANCE hInstance = GetModuleHandle(NULL);
+
+        HRSRC hResInfo = FindResource(hInstance, MAKEINTRESOURCE(ID_EULA_TEXT), RT_RCDATA);
+        HGLOBAL hGlob = LoadResource(hInstance, hResInfo);
+        DWORD dwSize = SizeofResource(hInstance, hResInfo);
+
+        const char* pszText = LockResource(hGlob);
+
+        int len = MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, NULL, 0);
+        g_pszEULAText = calloc(len, len * sizeof(WCHAR));
+
+        MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, g_pszEULAText, len);
+
+        HWND hRichEdit = GetDlgItem(hWnd, IDC_EULATEXT);
+
+        SETTEXTEX ste;
+        ste.codepage = CP_UTF8;
+        ste.flags = ST_DEFAULT;
+        SendMessage(hRichEdit, EM_SETTEXTEX, (WPARAM) &ste, (LPARAM) g_pszEULAText);
+
+        DWORD dwStyle = GetWindowStyle(hRichEdit);
+        dwStyle &= ES_READONLY;
+        // SetWindowLongPtr(hRichEdit, GWL_STYLE, dwStyle);
+
+        FreeResource(hResInfo);
+      }
+    break;
     case WM_COMMAND:
       {
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
           EndDialog(hWnd, LOWORD(wParam));
+          free(g_pszEULAText);
           return TRUE;
         }
       }

@@ -1,0 +1,9 @@
+PaniView
+A lightweight image viewer for Windows
+
+Author: Philosoph228 <<a href="mailto:philosoph228@gmail.com">philosoph228@gmail.com</a>>
+
+
+Copyright © 2022 Aragajaga
+
+<a href="https://github.com/Aragajaga/paniview">GitHub</a> | <a href="https://github.com/Aragajaga/paniview/releases">Check for newer releases</a> | <a href="https://github.com/Aragajaga/paniview/issues">Report an issue</a>

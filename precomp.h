@@ -40,6 +40,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <richedit.h>
 
 #include <shlwapi.h>
 #include <shlobj.h>
@@ -48,9 +49,7 @@
 #include <pathcch.h>
 
 /* Direct2D headers */
-#include <d2d1.h>
-#include <d2d1_1.h>
-#include <dwrite.h>
+#include "d2dwrapper.h"
 #include <wincodec.h>
 
 #endif  /* PANIVIEW_PRECOMP_H */
