@@ -49,7 +49,6 @@ typedef struct _tagRENDERCTLDATA {
   ID2D1SolidColorBrush *m_pCornflowerBlueBrush;
 
   WCHAR szPath[MAX_PATH];
-  BOOL bFit;
   HWND m_hWnd;
 } RENDERCTLDATA, *LPRENDERCTLDATA;
 
@@ -92,6 +91,7 @@ typedef struct _tagSETTINGS {
   int nPathInTitleType;
   int nRendererType;
   int nToolbarTheme;
+  BOOL bFit;
 } SETTINGS;
 
 typedef struct _tagNAVIASSOCENTRY {
@@ -1186,7 +1186,8 @@ void RenderCtl_OnPaint(HWND hWnd)
       D2D1_SIZE_F bmpSize;
       bmpSize = dxID2D1Bitmap_GetSize(wndData->m_pD2DBitmap);
 
-      if (wndData->bFit) {
+      PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
+      if (pApp->m_settings.bFit) {
         if (bmpSize.width > rtSize.width) {
           float ratio = bmpSize.height/ bmpSize.width;
           bmpSize.width = rtSize.width;
@@ -1201,12 +1202,12 @@ void RenderCtl_OnPaint(HWND hWnd)
       }
 
       matAnchor = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F){
-            -(bmpSize.width / 2),
-            -(bmpSize.height / 2)});
+            -(bmpSize.width / 2.0f),
+            -(bmpSize.height / 2.0f)});
 
       matPosition = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F){
-            rtSize.width / 2,
-            rtSize.height / 2});
+            roundf(rtSize.width / 2.0f),
+            roundf(rtSize.height / 2.0f)});
 
       mat = D2DUtilMatrixMultiply(&matAnchor, &matPosition);
 
@@ -1343,20 +1344,24 @@ void RenderCtl_OnFileNext(HWND hWnd)
   WCHAR szNextFile[MAX_PATH] = { 0 };
   NextFileInDir(wndData, TRUE, szNextFile);
 
-  hr = RenderCtl_LoadFromFile(wndData, szNextFile);
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
+  if (szNextFile[0] != '\0')
+  {
+    hr = RenderCtl_LoadFromFile(wndData, szNextFile);
+    if (FAILED(hr)) {
+      PopupError(hr, NULL);
+      assert(FALSE);
+    }
   }
 }
 
 void RenderCtl_OnFitCmd(HWND hWnd)
 {
   LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
+  PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
+
   assert(wndData);
 
-  wndData->bFit = !wndData->bFit;
+  pApp->m_settings.bFit = !pApp->m_settings.bFit;
   InvalidateRect(wndData->m_hWnd, NULL, FALSE);
 }
 
