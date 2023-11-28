@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.17 FATAL_ERROR)
 
-project(paniview C)
+project(paniview LANGUAGES C CXX)
 
 include(CTest)
 
@@ -43,13 +43,19 @@ if(GIT_FOUND)
 endif()
 
 configure_file(version.h.in version.h)
-
-add_executable(${PROJECT_NAME} WIN32 paniview.c dlnklist.c paniview.rc)
+add_executable(${PROJECT_NAME} WIN32 paniview.c dlnklist.c d2dwrapper.cpp paniview.rc)
 target_compile_definitions(${PROJECT_NAME} PRIVATE _UNICODE UNICODE)
-target_link_options(${PROJECT_NAME} PRIVATE -municode)
+
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+if(MSVC)
+target_link_options(${PROJECT_NAME} PRIVATE /MANIFEST:NO)
+else()
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Werror -pedantic)
-target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 shlwapi pathcch d2d1)
+target_link_options(${PROJECT_NAME} PRIVATE -municode)
+endif()
+
+target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 shlwapi pathcch d2d1 windowscodecs)
 
 if(BUILD_TESTING)
   add_subdirectory(test)
