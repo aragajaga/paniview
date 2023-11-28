@@ -74,9 +74,12 @@ enum {
 };
 
 enum {
+  MIME_UNKNOWN = 0,
   MIME_IMAGE_PNG = 1,
   MIME_IMAGE_JPG = 2,
   MIME_IMAGE_GIF = 3,
+  MIME_IMAGE_WEBP = 4,
+  MIME_IMAGE_PGM = 5,
 };
 
 typedef struct _tagSETTINGS {
@@ -248,31 +251,27 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                              creating*/
 
   // Open file from shell command
-  {
+  if (lpCmdLine[0] != L'\0') {
     int nArgs = 0;
-    PWSTR *ppszArgv = CommandLineToArgvW(lpCmdLine, &nArgs);
+    PWSTR* ppszArgv = CommandLineToArgvW(lpCmdLine, &nArgs);
+    if (nArgs > 0) {
+      PathUnquoteSpaces(ppszArgv[0]);
 
-    if (nArgs > 1)
-    {
-        PathUnquoteSpaces(ppszArgv[0]);
+      LPMAINFRAMEDATA pMainWndData = NULL;
+      pMainWndData = (LPMAINFRAMEDATA)GetWindowLongPtr(hWndMain, 0);
 
-        LPMAINFRAMEDATA pMainWndData = NULL;
-        pMainWndData = (LPMAINFRAMEDATA)GetWindowLongPtr(hWndMain, 0);
+      if (pMainWndData) {
+        HWND hRenderer;
+        hRenderer = pMainWndData->hRenderer;
 
-        if (pMainWndData)
-        {
-            HWND hRenderer;
-            hRenderer = pMainWndData->hRenderer;
+        if (hRenderer && IsWindow(hRenderer)) {
+          LPRENDERCTLDATA pRenderCtlData = NULL;
+          pRenderCtlData = (LPRENDERCTLDATA)GetWindowLongPtr(hRenderer, 0);
 
-            if (hRenderer && IsWindow(hRenderer))
-            {
-                LPRENDERCTLDATA pRenderCtlData = NULL;
-                pRenderCtlData = (LPRENDERCTLDATA)GetWindowLongPtr(hRenderer, 0);
-
-                RenderCtl_LoadFromFile(pRenderCtlData, ppszArgv[0]);
-                InvalidateRect(hWndMain, NULL, FALSE);
-            }
+          RenderCtl_LoadFromFile(pRenderCtlData, ppszArgv[0]);
+          InvalidateRect(hWndMain, NULL, FALSE);
         }
+      }
     }
   }
 
@@ -1748,6 +1747,58 @@ BOOL WstringComparator(void *str1, void *str2)
   return wcscmp(str1, str2) > 0;
 }
 
+const unsigned char g_pngMagic[] = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+const unsigned char g_gifMagic[] = { 0x47, 0x49, 0x46, 0x38 };
+const unsigned char g_jpgMagic[] = { 0xFF, 0xD8, 0xFF };
+const unsigned char g_webpMagic[] = { 'R', 'I', 'F', 'F', 'W', 'E', 'B', 'P' };
+const unsigned char g_pgmMagic[] = { 'P', '5' };
+
+int GetFileMIMEType(PCWSTR pszPath)
+{
+  FILE* fp = NULL;
+  unsigned char magicBuffer[80] = { 0 };
+  size_t fileSize = 0;
+  int mime = MIME_UNKNOWN;
+
+  fp = _wfopen(pszPath, L"rb");
+  if (fp)
+  {
+    fseek(fp, 0, SEEK_END);
+    fileSize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (fileSize > 80)
+    {
+      fread(magicBuffer, 80, 1, fp);
+
+      if (!memcmp(magicBuffer, g_pngMagic, sizeof(g_pngMagic)))
+      {
+        mime = MIME_IMAGE_PNG;
+      }
+      else if (!memcmp(magicBuffer, g_gifMagic, sizeof(g_gifMagic)))
+      {
+        mime = MIME_IMAGE_GIF;
+      }
+      else if (!memcmp(magicBuffer, g_jpgMagic, sizeof(g_jpgMagic)))
+      {
+        mime = MIME_IMAGE_JPG;
+      }
+      else if (!memcmp(magicBuffer, g_webpMagic, 4) && !memcmp(&magicBuffer[8], &g_webpMagic[4], 4))
+      {
+        mime = MIME_IMAGE_WEBP;
+      }
+      else if (!memcmp(magicBuffer, g_pgmMagic, sizeof(g_pgmMagic)))
+      {
+        mime = MIME_IMAGE_PGM;
+      }
+    }
+
+    fclose(fp);
+  }
+
+  return mime;
+}
+
 BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   WCHAR szDir[MAX_PATH] = { 0 };
   WCHAR szMask[MAX_PATH] = { 0 };
@@ -1776,12 +1827,23 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
 
   do {
     /* Skip special paths */
-    if (!(wcscmp(ffd.cFileName, L".") && wcscmp(ffd.cFileName, L"..")))
+    if (
+      !wcscmp(ffd.cFileName, L".") ||
+      !wcscmp(ffd.cFileName, L"..") ||
+      ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY
+      )
+    {
       continue;
+    }
 
     /* Concatenate base path and filename */
     StringCchCopy(szPath, MAX_PATH, szDir);
     PathCchAppend(szPath, MAX_PATH, ffd.cFileName);
+
+    int mime = GetFileMIMEType(szPath);
+    if (!mime) {
+      continue;
+    }
 
     /* Make path string shared */
     LPWSTR lpszPath = calloc(1, sizeof(szPath));
@@ -1789,7 +1851,6 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
 
     /* Append path to list */
     DoubleLinkList_AppendFront(&dirList, lpszPath, TRUE);
-    // MessageBox(NULL, lpszPath, L"Dir file list", MB_OK);
 
   } while (FindNextFile(hSearch, &ffd));
 
@@ -1798,23 +1859,23 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   /* Sort the filenames in alphabetical order */
   DoubleLinkList_Sort(&dirList);
 
-  void *pNextPathData = NULL;
+  PCWSTR pNextPathData = NULL;
   for (DOUBLE_LINK_NODE *node = dirList.pBegin; node; node = node->pNext) {
     if (!(wcscmp(node->pData, pRenderCtl->szPath))) {
       if (fNext) {
-        if (node->pNext) {
-          pNextPathData = node->pNext->pData;
+        if (node->pNext && node->pNext->pData) {
+          pNextPathData = (PCWSTR) node->pNext->pData;
         }
         else {
-          pNextPathData = dirList.pBegin;
+          pNextPathData = (PCWSTR) dirList.pBegin->pData;
         }
       }
       else {
-        if (node->pPrev) {
-          pNextPathData = node->pPrev->pData;
+        if (node->pPrev && node->pPrev->pData) {
+          pNextPathData = (PCWSTR) node->pPrev->pData;
         }
         else {
-          pNextPathData = dirList.pEnd;
+          pNextPathData = (PCWSTR) dirList.pEnd->pData;
         }
       }
 
