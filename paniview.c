@@ -504,7 +504,7 @@ static inline D2D1_MATRIX_3X2_F D2DUtilMatrixMultiply(D2D1_MATRIX_3X2_F *a,
   return mat;
 }
 
-static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF color, FLOAT alpha)
+static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF color, float alpha)
 {
   D2D1_COLOR_F d2dColor;
   d2dColor.b = (float)((color >> 16) & 0xFF) / 255.f;
