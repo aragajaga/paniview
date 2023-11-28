@@ -49,7 +49,6 @@ typedef struct _tagRENDERCTLDATA {
   ID2D1SolidColorBrush *m_pCornflowerBlueBrush;
 
   WCHAR szPath[MAX_PATH];
-  BOOL bFit;
   HWND m_hWnd;
 } RENDERCTLDATA, *LPRENDERCTLDATA;
 
@@ -92,6 +91,7 @@ typedef struct _tagSETTINGS {
   int nPathInTitleType;
   int nRendererType;
   int nToolbarTheme;
+  BOOL bFit;
 } SETTINGS;
 
 typedef struct _tagNAVIASSOCENTRY {
@@ -108,7 +108,13 @@ typedef struct _tagPANIVIEWAPP {
 
 HINSTANCE g_hInst;
 
-static const char g_cfgMagic[4] = { 'P', 'N', 'V', '\xE5' };
+static const char g_cfgMagic[4] = { 'P', 'N', 'V', 0xE5 };
+
+const unsigned char g_pngMagic[] = { '‰', 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+const unsigned char g_gifMagic[] = { 'G', 'I', 'F', '8'};
+const unsigned char g_jpgMagic[] = { 0xFF, 0xD8, 0xFF };
+const unsigned char g_webpMagic[] = { 'R', 'I', 'F', 'F', 'W', 'E', 'B', 'P' };
+const unsigned char g_pgmMagic[] = { 'P', '5' };
 
 const WCHAR szPaniView[] = L"PaniView";
 const WCHAR szPaniViewClassName[] = L"PaniView_Main";
@@ -174,6 +180,7 @@ HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA, LPWSTR);
 
 HRESULT InvokeFileOpenDialog(LPWSTR*);
 
+int GetFileMIMEType(PCWSTR pszPath);
 BOOL NextFileInDir(LPRENDERCTLDATA, BOOL, LPWSTR);
 
 INT_PTR CALLBACK AboutDlgProc(HWND, UINT, WPARAM, LPARAM);
@@ -504,7 +511,7 @@ static inline D2D1_MATRIX_3X2_F D2DUtilMatrixMultiply(D2D1_MATRIX_3X2_F *a,
   return mat;
 }
 
-static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF color, FLOAT alpha)
+static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF color, float alpha)
 {
   D2D1_COLOR_F d2dColor;
   d2dColor.b = (float)((color >> 16) & 0xFF) / 255.f;
@@ -1179,7 +1186,8 @@ void RenderCtl_OnPaint(HWND hWnd)
       D2D1_SIZE_F bmpSize;
       bmpSize = dxID2D1Bitmap_GetSize(wndData->m_pD2DBitmap);
 
-      if (wndData->bFit) {
+      PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
+      if (pApp->m_settings.bFit) {
         if (bmpSize.width > rtSize.width) {
           float ratio = bmpSize.height/ bmpSize.width;
           bmpSize.width = rtSize.width;
@@ -1194,12 +1202,12 @@ void RenderCtl_OnPaint(HWND hWnd)
       }
 
       matAnchor = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F){
-            -(bmpSize.width / 2),
-            -(bmpSize.height / 2)});
+            -(bmpSize.width / 2.0f),
+            -(bmpSize.height / 2.0f)});
 
       matPosition = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F){
-            rtSize.width / 2,
-            rtSize.height / 2});
+            roundf(rtSize.width / 2.0f),
+            roundf(rtSize.height / 2.0f)});
 
       mat = D2DUtilMatrixMultiply(&matAnchor, &matPosition);
 
@@ -1336,20 +1344,24 @@ void RenderCtl_OnFileNext(HWND hWnd)
   WCHAR szNextFile[MAX_PATH] = { 0 };
   NextFileInDir(wndData, TRUE, szNextFile);
 
-  hr = RenderCtl_LoadFromFile(wndData, szNextFile);
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
+  if (szNextFile[0] != '\0')
+  {
+    hr = RenderCtl_LoadFromFile(wndData, szNextFile);
+    if (FAILED(hr)) {
+      PopupError(hr, NULL);
+      assert(FALSE);
+    }
   }
 }
 
 void RenderCtl_OnFitCmd(HWND hWnd)
 {
   LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
+  PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
+
   assert(wndData);
 
-  wndData->bFit = !wndData->bFit;
+  pApp->m_settings.bFit = !pApp->m_settings.bFit;
   InvalidateRect(wndData->m_hWnd, NULL, FALSE);
 }
 
@@ -1746,12 +1758,6 @@ BOOL WstringComparator(void *str1, void *str2)
 {
   return wcscmp(str1, str2) > 0;
 }
-
-const unsigned char g_pngMagic[] = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
-const unsigned char g_gifMagic[] = { 0x47, 0x49, 0x46, 0x38 };
-const unsigned char g_jpgMagic[] = { 0xFF, 0xD8, 0xFF };
-const unsigned char g_webpMagic[] = { 'R', 'I', 'F', 'F', 'W', 'E', 'B', 'P' };
-const unsigned char g_pgmMagic[] = { 'P', '5' };
 
 int GetFileMIMEType(PCWSTR pszPath)
 {

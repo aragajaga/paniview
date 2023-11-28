@@ -35,6 +35,8 @@
 #undef _NO_BOOL_TYPEDEF
 #endif
 
+#include <math.h>
+
 /* WinAPI headers */
 #define WINDOWS_LEAN_AND_MEAN
 #include <windows.h>
