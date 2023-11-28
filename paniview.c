@@ -109,6 +109,11 @@ typedef struct _tagPANIVIEWAPP {
 HINSTANCE g_hInst;
 
 static const char g_cfgMagic[4] = { 'P', 'N', 'V', '\xE5' };
+const unsigned char g_pngMagic[] = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+const unsigned char g_gifMagic[] = { 0x47, 0x49, 0x46, 0x38 };
+const unsigned char g_jpgMagic[] = { 0xFF, 0xD8, 0xFF };
+const unsigned char g_webpMagic[] = { 'R', 'I', 'F', 'F', 'W', 'E', 'B', 'P' };
+const unsigned char g_pgmMagic[] = { 'P', '5' };
 
 const WCHAR szPaniView[] = L"PaniView";
 const WCHAR szPaniViewClassName[] = L"PaniView_Main";
@@ -174,6 +179,7 @@ HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA, LPWSTR);
 
 HRESULT InvokeFileOpenDialog(LPWSTR*);
 
+int GetFileMIMEType(PCWSTR pszPath);
 BOOL NextFileInDir(LPRENDERCTLDATA, BOOL, LPWSTR);
 
 INT_PTR CALLBACK AboutDlgProc(HWND, UINT, WPARAM, LPARAM);
@@ -1746,12 +1752,6 @@ BOOL WstringComparator(void *str1, void *str2)
 {
   return wcscmp(str1, str2) > 0;
 }
-
-const unsigned char g_pngMagic[] = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
-const unsigned char g_gifMagic[] = { 0x47, 0x49, 0x46, 0x38 };
-const unsigned char g_jpgMagic[] = { 0xFF, 0xD8, 0xFF };
-const unsigned char g_webpMagic[] = { 'R', 'I', 'F', 'F', 'W', 'E', 'B', 'P' };
-const unsigned char g_pgmMagic[] = { 'P', '5' };
 
 int GetFileMIMEType(PCWSTR pszPath)
 {
