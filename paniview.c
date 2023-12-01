@@ -3,6 +3,9 @@
 
 #include "dlnklist.h"
 
+#include <GL/glew.h>
+#include <GL/wglew.h>
+
 #define WM_SENDNUDES  WM_USER + 1
 #define WM_FILENEXT   WM_USER + 2
 #define WM_FILEPREV   WM_USER + 3
@@ -37,20 +40,57 @@ typedef struct _tagMAINFRAMEDATA {
   HWND hToolbar;
 } MAINFRAMEDATA, *LPMAINFRAMEDATA;
 
-typedef struct _tagRENDERCTLDATA {
+typedef struct _tagRENDERCTLDATA RENDERCTLDATA, *LPRENDERCTLDATA;
+typedef struct _tagRENDERERCONTEXT RENDERERCONTEXT, *LPRENDERERCONTEXT;
 
-  ID2D1Factory *m_pD2DFactory;
-  ID2D1HwndRenderTarget *m_pRenderTarget;
-  ID2D1Bitmap *m_pD2DBitmap;
-  IWICImagingFactory *m_pIWICFactory;
-  IWICFormatConverter *m_pConvertedSourceBitmap;
+struct _tagRENDERERCONTEXT {
+  void (*Release)(LPRENDERERCONTEXT pRendererContext);
+  void (*Resize)(LPRENDERERCONTEXT pRendererContext, int cx, int cy);
+  void (*Draw)(LPRENDERERCONTEXT pRendererContext, LPRENDERCTLDATA pRenderCtl, HWND hWnd);
+  void (*LoadWICBitmap)(LPRENDERERCONTEXT pRendererContext, IWICBitmapSource* pIWICBitmapSource);
+};
 
-  ID2D1SolidColorBrush *m_pLightSlateGrayBrush;
-  ID2D1SolidColorBrush *m_pCornflowerBlueBrush;
+/* Renderer context */
+typedef struct _tagD2DRENDERERCONTEXT {
+  RENDERERCONTEXT base;
 
+  ID2D1Factory* m_pD2DFactory;
+  ID2D1HwndRenderTarget* m_pRenderTarget;
+  ID2D1Bitmap* m_pD2DBitmap;
+
+  ID2D1SolidColorBrush* m_pLightSlateGrayBrush;
+  ID2D1SolidColorBrush* m_pCornflowerBlueBrush;
+} D2DRENDERERCONTEXT, *LPD2DRENDERERCONTEXT;
+
+typedef struct _tagOPENGLRENDERERCONTEXT {
+  RENDERERCONTEXT base;
+
+  HGLRC m_hGLContext;
+  GLuint m_textureId;
+  GLuint m_programId;
+
+  GLuint m_vertexArray;
+  GLuint m_vertexBuffer;
+  GLuint m_uvBuffer;
+
+  float m_viewportWidth;
+  float m_viewportHeight;
+  float m_imageWidth;
+  float m_imageHeight;
+} OPENGLRENDERERCONTEXT, *LPOPENGLRENDERERCONTEXT;
+
+typedef struct _tagGDIRENDERERCONTEXT {
+  RENDERERCONTEXT base;
+} GDIRENDERERCONTEXT, *LPGDIRENDERERCONTEXT;
+
+/* Render control data */
+struct _tagRENDERCTLDATA {
   WCHAR szPath[MAX_PATH];
   HWND m_hWnd;
-} RENDERCTLDATA, *LPRENDERCTLDATA;
+  LPRENDERERCONTEXT m_rendererContext;
+  IWICImagingFactory* m_pIWICFactory;
+  IWICFormatConverter* m_pConvertedSourceBitmap;
+};
 
 enum {
   RENDERER_D2D = 1,
@@ -172,8 +212,6 @@ void RenderCtl_OnSendNudes(HWND);
 void RenderCtl_OnFilePrev(HWND);
 void RenderCtl_OnFileNext(HWND);
 void RenderCtl_OnFitCmd(HWND);
-HRESULT RenderCtl_CreateDeviceResources(LPRENDERCTLDATA);
-void RenderCtl_DiscardDeviceResources(LPRENDERCTLDATA);
 HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA, LPWSTR);
 HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA, PWSTR, FILE*);
 HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA, LPWSTR);
@@ -1074,122 +1112,126 @@ LRESULT CALLBACK RenderCtl_WndProc(HWND hWnd, UINT message, WPARAM wParam,
   return DefWindowProc(hWnd, message, wParam, lParam);
 }
 
-BOOL RenderCtl_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
+void D2DRendererContext_Release(LPD2DRENDERERCONTEXT pD2DRendererContext)
 {
-  UNREFERENCED_PARAMETER(lpcs);
+  SAFE_RELEASE(pD2DRendererContext->m_pD2DFactory);
+  SAFE_RELEASE(pD2DRendererContext->m_pRenderTarget);
+  SAFE_RELEASE(pD2DRendererContext->m_pLightSlateGrayBrush);
+  SAFE_RELEASE(pD2DRendererContext->m_pCornflowerBlueBrush);
 
-  HRESULT hr = S_OK;
-  LPRENDERCTLDATA wndData;
+  free(pD2DRendererContext);
+}
 
-  wndData = (LPRENDERCTLDATA) calloc(1, sizeof(RENDERCTLDATA));
-  assert(wndData);
+void D2DRendererContext_Resize(LPD2DRENDERERCONTEXT pD2DRendererContext, int cx, int cy)
+{
+  ID2D1HwndRenderTarget** ppRenderTarget = &pD2DRendererContext->m_pRenderTarget;
 
-  wndData->m_hWnd = hWnd;
-
-  hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-      &IID_IWICImagingFactory, (LPVOID)&wndData->m_pIWICFactory);
-  if (FAILED(hr))
+  if (*ppRenderTarget)
   {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    return FALSE;
-  }
-
-  /* !!! TAKE CARE !!!
-   * IID_ID2D1Factory is used, but IID_ID2D1Factory1 with 'one' in the end
-   * exist, but mingw can't find it (by the way it is defined in d2d1_1.h,
-   * probably that header should to be included instead of just d2d1.h)
-   * === MAKE RESEARCH === */
-  hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &IID_ID2D1Factory1,
-      NULL, (LPVOID)&(wndData->m_pD2DFactory));
-  if (FAILED(hr)) {
-    assert(FALSE);
-    /* will wndData be freed on WM_DESTROY after `return` returns FALSE? */
-    return FALSE;
-  }
-
-  SetWindowLongPtr(hWnd, 0, (LONG_PTR)wndData);
-  return TRUE;
-}
-
-void RenderCtl_OnSize(HWND hWnd, UINT state, int cx, int cy)
-{
-  UNREFERENCED_PARAMETER(hWnd);
-  UNREFERENCED_PARAMETER(state);
-
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  if (wndData->m_pRenderTarget) {
-    dxID2D1HwndRenderTarget_Resize(wndData->m_pRenderTarget,
-        &(D2D1_SIZE_U){ cx, cy });
+    dxID2D1HwndRenderTarget_Resize(*ppRenderTarget, &(D2D1_SIZE_U){ cx, cy });
   }
 }
 
-void RenderCtl_OnPaint(HWND hWnd)
+HRESULT D2DRendererContext_CreateDeviceResources(LPD2DRENDERERCONTEXT pD2DRendererContext, HWND hWnd)
 {
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
+  ID2D1HwndRenderTarget** ppRenderTarget = &pD2DRendererContext->m_pRenderTarget;
+  ID2D1Factory** ppD2DFactory = &pD2DRendererContext->m_pD2DFactory;
 
   HRESULT hr = S_OK;
 
-  hr = RenderCtl_CreateDeviceResources(wndData);
+  if (!*ppRenderTarget) {
+    RECT rcClient;
+    D2D1_SIZE_U size;
+
+    GetClientRect(hWnd, &rcClient);
+    size = (D2D1_SIZE_U){
+      rcClient.right - rcClient.left,
+      rcClient.bottom - rcClient.top
+    };
+
+    /* TODO: Research */
+    D2D1_RENDER_TARGET_PROPERTIES rtProp = { 0 };
+    rtProp.type = D2D1_RENDER_TARGET_TYPE_DEFAULT;
+    rtProp.pixelFormat.format = DXGI_FORMAT_UNKNOWN;
+    rtProp.pixelFormat.alphaMode = D2D1_ALPHA_MODE_UNKNOWN;
+    rtProp.dpiX = DEFAULT_DPI;
+    rtProp.dpiY = DEFAULT_DPI;
+    rtProp.usage = D2D1_RENDER_TARGET_USAGE_NONE;
+    rtProp.minLevel = D2D1_FEATURE_LEVEL_DEFAULT;
+
+    D2D1_HWND_RENDER_TARGET_PROPERTIES rtHwndProp = { 0 };
+    rtHwndProp.hwnd = hWnd;
+    rtHwndProp.pixelSize = size; /* CHECK */
+    rtHwndProp.presentOptions = D2D1_PRESENT_OPTIONS_NONE;
+
+    /* Create a Direct2D render target */
+    hr = dxID2D1Factory_CreateHwndRenderTarget(
+      *ppD2DFactory,
+      &rtProp,
+      &rtHwndProp,
+      ppRenderTarget
+    );
+  }
+
+  return hr;
+}
+
+void D2DRendererContext_DiscardDeviceResources(LPD2DRENDERERCONTEXT pD2DRendererContext)
+{
+  SAFE_RELEASE(pD2DRendererContext->m_pRenderTarget);
+}
+
+void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERCTLDATA pRenderCtl, HWND hWnd)
+{
+  ID2D1HwndRenderTarget** ppRenderTarget = &pD2DRendererContext->m_pRenderTarget;
+  IWICFormatConverter** ppConvertedSourceBitmap = &pRenderCtl->m_pConvertedSourceBitmap;
+  ID2D1Bitmap** ppD2DBitmap = &pD2DRendererContext->m_pD2DBitmap;
+
+  HRESULT hr = S_OK;
+
+  hr = D2DRendererContext_CreateDeviceResources(pD2DRendererContext, hWnd);
   if (SUCCEEDED(hr)) {
 
-    dxID2D1RenderTarget_BeginDraw((ID2D1RenderTarget *)wndData->m_pRenderTarget);
+    dxID2D1RenderTarget_BeginDraw((ID2D1RenderTarget*)*ppRenderTarget);
 
     D2D1_MATRIX_3X2_F mat = D2DUtilMatrixIdentity();
 
-    dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget *)wndData->m_pRenderTarget, &mat);
+    dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget*)*ppRenderTarget, &mat);
 
     D2D1_COLOR_F clearColor = D2DColorFromRGB(RGB(0xFF, 0xFF, 0xFF));
 
-    dxID2D1RenderTarget_Clear((ID2D1RenderTarget *)wndData->m_pRenderTarget, &clearColor);
+    dxID2D1RenderTarget_Clear((ID2D1RenderTarget*)*ppRenderTarget, &clearColor);
 
     /* Retrieve the size of the drawing area. */
     D2D1_SIZE_F rtSize;
-    rtSize = dxID2D1HwndRenderTarget_GetSize(wndData->m_pRenderTarget);
-
-    /* Draw a grid background by using a loop and the render target's DrawLine
-     * method to draw a series of lines. */
-    /*
-    int width = rtSize.width;
-    int height = rtSize.height;
-    */
-
-    /*
-    D2D1_RECT_F imgRect = {
-      0.0f, 0.0f,
-      rtSize.width, rtSize.height
-    };
-    */
+    rtSize = dxID2D1HwndRenderTarget_GetSize(*ppRenderTarget);
 
     /*  D2DBitmap may have been released due to device loss.
      *  If so, re-create it from the source bitmap */
-    if (wndData->m_pConvertedSourceBitmap && !wndData->m_pD2DBitmap)
+    if (*ppConvertedSourceBitmap && !*ppD2DBitmap)
     {
       dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-          (IWICBitmapSource *)wndData->m_pConvertedSourceBitmap,
-          NULL,
-          &wndData->m_pD2DBitmap
+        (ID2D1RenderTarget*)*ppRenderTarget,
+        (IWICBitmapSource*)*ppConvertedSourceBitmap,
+        NULL,
+        ppD2DBitmap
       );
     }
 
     /* Draw an image and scale it to the current window size */
-    if (wndData->m_pD2DBitmap)
+    if (*ppD2DBitmap)
     {
       D2D1_MATRIX_3X2_F matAnchor;
       D2D1_MATRIX_3X2_F matPosition;
       D2D1_MATRIX_3X2_F mat;
 
       D2D1_SIZE_F bmpSize;
-      bmpSize = dxID2D1Bitmap_GetSize(wndData->m_pD2DBitmap);
+      bmpSize = dxID2D1Bitmap_GetSize(*ppD2DBitmap);
 
       PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
       if (pApp->m_settings.bFit) {
         if (bmpSize.width > rtSize.width) {
-          float ratio = bmpSize.height/ bmpSize.width;
+          float ratio = bmpSize.height / bmpSize.width;
           bmpSize.width = rtSize.width;
           bmpSize.height = rtSize.width * ratio;
         }
@@ -1201,17 +1243,19 @@ void RenderCtl_OnPaint(HWND hWnd)
         }
       }
 
-      matAnchor = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F){
-            -(bmpSize.width / 2.0f),
-            -(bmpSize.height / 2.0f)});
+      matAnchor = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F) {
+          -(bmpSize.width / 2.0f),
+          -(bmpSize.height / 2.0f)
+      });
 
-      matPosition = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F){
-            roundf(rtSize.width / 2.0f),
-            roundf(rtSize.height / 2.0f)});
+      matPosition = D2DUtilMakeTranslationMatrix((D2D1_SIZE_F) {
+          roundf(rtSize.width / 2.0f),
+          roundf(rtSize.height / 2.0f)
+      });
 
       mat = D2DUtilMatrixMultiply(&matAnchor, &matPosition);
 
-      dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget *)wndData->m_pRenderTarget, &mat);
+      dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget*)*ppRenderTarget, &mat);
 
       D2D1_RECT_F imgRect = {
         0.0f, 0.0f,
@@ -1219,78 +1263,574 @@ void RenderCtl_OnPaint(HWND hWnd)
       };
 
       dxID2D1RenderTarget_DrawBitmap(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-          wndData->m_pD2DBitmap,
-          &imgRect, /* Destination rectangle */
-          1.0f, /* Opacity */
-          D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-          NULL);  /* No source rectangle (full image) */
+        (ID2D1RenderTarget*)*ppRenderTarget,
+        *ppD2DBitmap,
+        &imgRect, /* Destination rectangle */
+        1.0f, /* Opacity */
+        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+        NULL);  /* No source rectangle (full image) */
     }
 
-#if 0
-    /* Simple D2D Drawing */
-
-    /* 10px col spacing */
-    for (int x = 0; x < width; x += 10) {
-      D2D1_POINT_2F p1 = {x, 0.0f};
-      D2D1_POINT_2F p2 = {x, rtSize.height};
-
-      wndData->m_pRenderTarget->lpVtbl->Base.DrawLine(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-          p1,
-          p2,
-          (ID2D1Brush *)wndData->m_pLightSlateGrayBrush,
-          0.5f,
-          NULL);  /* No stroke style */
-    }
-
-    /* 10px row spacing */
-    for (int y = 0; y < height; y += 10) {
-      D2D1_POINT_2F p1 = {0.0f, y};
-      D2D1_POINT_2F p2 = {rtSize.width, y};
-
-      wndData->m_pRenderTarget->lpVtbl->Base.DrawLine(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-          p1,
-          p2,
-          (ID2D1Brush *)wndData->m_pCornflowerBlueBrush,
-          0.5f,
-          NULL);  /* No stroke style */
-    }
-
-    /* Draw two rectangles */
-    D2D1_RECT_F rectangle1 = {
-        rtSize.width/2 - 50.0f, rtSize.height/2 - 50.0f, rtSize.width/2 + 50.f,
-        rtSize.height/2 + 50.f,
-    };
-
-    D2D1_RECT_F rectangle2 = {
-        rtSize.width/2 - 100.0f,
-        rtSize.height/2 - 100.0f,
-        rtSize.width/2 + 100.0f,
-        rtSize.height/2 + 100.0f,
-    };
-
-    /* Fill the interior of the first rectangle with the gray brush */
-    wndData->m_pRenderTarget->lpVtbl->Base.FillRectangle(
-        (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-        &rectangle1,
-        (ID2D1Brush *)wndData->m_pLightSlateGrayBrush);
-
-    /* Paint the outline of the second rectangle */
-    wndData->m_pRenderTarget->lpVtbl->Base.DrawRectangle(
-        (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-        &rectangle2,
-        (ID2D1Brush *)wndData->m_pCornflowerBlueBrush,
-        1.0,
-        NULL);
-#endif /* if 0 */
-
-    hr = dxID2D1RenderTarget_EndDraw((ID2D1RenderTarget *)wndData->m_pRenderTarget, NULL, NULL);
+    hr = dxID2D1RenderTarget_EndDraw((ID2D1RenderTarget*)*ppRenderTarget, NULL, NULL);
     if (hr == (HRESULT)D2DERR_RECREATE_TARGET) {
       hr = S_OK;
-      RenderCtl_DiscardDeviceResources(wndData);
+      D2DRendererContext_DiscardDeviceResources(pD2DRendererContext);
     }
+  }
+}
+
+void D2DRendererContext_LoadWICBitmap(LPD2DRENDERERCONTEXT pD2DRendererContext, IWICBitmapSource* pIWICBitmapSource)
+{
+  HRESULT hr = S_OK;
+
+  ID2D1HwndRenderTarget** ppRenderTarget = &pD2DRendererContext->m_pRenderTarget;
+  ID2D1Bitmap** ppD2DBitmap = &pD2DRendererContext->m_pD2DBitmap;
+  ID2D1Bitmap* pD2DDirtyBitmap = NULL;
+
+  hr = dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
+    (ID2D1RenderTarget*)*ppRenderTarget,
+    pIWICBitmapSource,
+    NULL,
+    &pD2DDirtyBitmap
+  );
+
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  /* Done successfully. Actually do the changes into structure. */
+  SAFE_RELEASE(*ppD2DBitmap);
+  *ppD2DBitmap = pD2DDirtyBitmap;
+
+fail:
+  // SAFE_RELEASE(pD2DDirtyBitmap);
+
+  return hr;
+}
+
+void InitializeD2DRendererContextStruct(LPD2DRENDERERCONTEXT pD2DRendererContext)
+{
+  pD2DRendererContext->base.Release = (void (*)(LPRENDERERCONTEXT))& D2DRendererContext_Release;
+  pD2DRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int))& D2DRendererContext_Resize;
+  pD2DRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTLDATA, HWND))& D2DRendererContext_Draw;
+  pD2DRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*))& D2DRendererContext_LoadWICBitmap;
+}
+
+HRESULT RenderCtl_InitializeWIC(LPRENDERCTLDATA wndData)
+{
+  HRESULT hr = S_OK;
+  IWICImagingFactory **ppIWICFactory = &wndData->m_pIWICFactory;
+
+  hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (LPVOID) ppIWICFactory);
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    return NULL;
+  }
+
+  return hr;
+}
+
+LPD2DRENDERERCONTEXT CreateD2DRenderer()
+{
+  LPD2DRENDERERCONTEXT pD2DRendererContext = NULL;
+  ID2D1Factory** ppD2DFactory = NULL;
+  HRESULT hr = S_OK;
+
+  pD2DRendererContext = (LPD2DRENDERERCONTEXT) calloc(1, sizeof(D2DRENDERERCONTEXT));
+  if (!pD2DRendererContext) {
+    return NULL;
+  }
+
+  ppD2DFactory = &pD2DRendererContext->m_pD2DFactory;
+
+  InitializeD2DRendererContextStruct(pD2DRendererContext);
+
+  hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &IID_ID2D1Factory1, NULL, (LPVOID) ppD2DFactory);
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    /* will wndData be freed on WM_DESTROY after `return` returns FALSE? */
+    assert(FALSE);
+    return NULL;
+  }
+
+  return pD2DRendererContext;
+}
+
+void OpenGLRendererContext_Release(LPOPENGLRENDERERCONTEXT pGLRendererContext)
+{
+
+}
+
+void OpenGLRendererContext_Resize(LPOPENGLRENDERERCONTEXT pGLRendererContext, int cx, int cy)
+{
+  pGLRendererContext->m_viewportWidth = (float)cx;
+  pGLRendererContext->m_viewportHeight = (float)cy;
+  glViewport(0, 0, cx, cy);
+}
+
+const GLfloat g_vertexBufferData[] = {
+   1.0f,  1.0f,  0.0f,
+  -1.0f,  1.0f,  0.0f,
+   1.0f, -1.0f,  0.0f,
+  -1.0f, -1.0f,  0.0f,
+};
+
+const GLfloat g_uvBufferData[] = {
+   1.0f,  0.0f,
+   0.0f,  0.0f,
+   1.0f,  1.0f,
+   0.0f,  1.0f,
+};
+
+void OpenGLRendererContext_CreateVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext)
+{
+  /* Create VBO and bind data to it */
+  glGenVertexArrays(1, &pGLRendererContext->m_vertexArray);
+  glBindVertexArray(pGLRendererContext->m_vertexArray);
+
+  /* Initialize vertex buffer */
+  glGenBuffers(1, &pGLRendererContext->m_vertexBuffer);
+  glBindBuffer(GL_ARRAY_BUFFER, pGLRendererContext->m_vertexBuffer);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(g_vertexBufferData), g_vertexBufferData, GL_STATIC_DRAW);
+
+  /* Initialize uv buffer */
+  glGenBuffers(1, &pGLRendererContext->m_uvBuffer);
+  glBindBuffer(GL_ARRAY_BUFFER, pGLRendererContext->m_uvBuffer);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(g_uvBufferData), g_uvBufferData, GL_STATIC_DRAW);
+}
+
+size_t pwGetFileSize(FILE* fp)
+{
+  size_t size = 0;
+
+  fseek(fp, 0, SEEK_END);
+  size = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+
+  return size;
+}
+
+GLuint OpenGLRendererContext_LoadShader(LPOPENGLRENDERERCONTEXT lpGLRendererContext, PCWSTR shaderFilePath, GLuint shaderType)
+{
+  GLuint shaderId = glCreateShader(shaderType);
+
+  FILE* pShaderFile = NULL;
+  pShaderFile = _wfopen(shaderFilePath, L"r");
+
+  if (pShaderFile)
+  {
+    size_t fileSize = pwGetFileSize(pShaderFile);
+
+    char* pShaderCode = (char*)calloc(1, fileSize);
+    fread(pShaderCode, 1, fileSize, pShaderFile);
+    pShaderCode[fileSize] = '\0';
+
+    fclose(pShaderFile);
+
+    /* Compile shader */
+    glShaderSource(shaderId, 1, (const char**)&pShaderCode, NULL);
+    glCompileShader(shaderId);
+
+    GLint result = GL_FALSE;
+    int infoLogLength;
+
+    /* Check shader */
+    glGetShaderiv(shaderId, GL_COMPILE_STATUS, &result);
+    glGetShaderiv(shaderId, GL_INFO_LOG_LENGTH, &infoLogLength);
+
+    if (infoLogLength > 0)
+    {
+      char* pShaderErrorMessage = (char*)calloc(1, infoLogLength);
+      glGetShaderInfoLog(shaderId, infoLogLength, NULL, pShaderErrorMessage);
+
+      printf("%s\n", pShaderErrorMessage);
+
+      free(pShaderErrorMessage);
+      free(pShaderCode);
+
+      exit(EXIT_FAILURE);
+    }
+
+    // free(pShaderCode);
+  }
+  else {
+    fprintf(stderr, "Impossible to open %s. Are you in the right directory? Don't forget to read the FAQ!", shaderFilePath);
+    exit(EXIT_FAILURE);
+  }
+
+  return shaderId;
+}
+
+GLuint OpenGLRendererContext_LoadShaders(LPOPENGLRENDERERCONTEXT pGLRendererContext, PCWSTR vertexFilePath, PCWSTR fragmentFilePath)
+{
+  /* Create shader objects */
+  GLuint vertexShaderId;
+  GLuint fragmentShaderId;
+
+  vertexShaderId = OpenGLRendererContext_LoadShader(pGLRendererContext, vertexFilePath, GL_VERTEX_SHADER);
+  fragmentShaderId = OpenGLRendererContext_LoadShader(pGLRendererContext, fragmentFilePath, GL_FRAGMENT_SHADER);
+
+  /* Link the program */
+  GLuint programId = glCreateProgram();
+  glAttachShader(programId, vertexShaderId);
+  glAttachShader(programId, fragmentShaderId);
+  glLinkProgram(programId);
+
+  /* Check the program */
+  GLint result = GL_FALSE;
+  int infoLogLength;
+
+  glGetProgramiv(programId, GL_LINK_STATUS, &result);
+  glGetProgramiv(programId, GL_INFO_LOG_LENGTH, &infoLogLength);
+
+  if (infoLogLength)
+  {
+    char* programErrorMessage = (char*)calloc(1, infoLogLength + 1);
+    glGetProgramInfoLog(programId, infoLogLength, NULL, programErrorMessage);
+
+    printf("%s\n", programErrorMessage);
+
+    free(programErrorMessage);
+
+    exit(EXIT_FAILURE);
+  }
+
+  glDetachShader(programId, vertexShaderId);
+  glDetachShader(programId, fragmentShaderId);
+
+  glDeleteShader(vertexShaderId);
+  glDeleteShader(fragmentShaderId);
+
+  return programId;
+}
+
+void OpenGLRendererContext_CreateTexture(LPOPENGLRENDERERCONTEXT pGLRendererContext)
+{
+  GLuint* textureId = &pGLRendererContext->m_textureId;
+
+  if (!*textureId)
+  {
+    glGenTextures(1, textureId);
+    glBindTexture(GL_TEXTURE_2D, *textureId);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
+}
+
+void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTLDATA pWndData)
+{
+  if (!pGLRendererContext->m_hGLContext)
+  {
+    /* Choose HDC pixel format */
+    PIXELFORMATDESCRIPTOR pfd = { 0 };
+    pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    pfd.cDepthBits = 32;
+    pfd.iLayerType = PFD_MAIN_PLANE;
+
+    HDC hDC = GetDC(pWndData->m_hWnd);
+
+    int pixFmtId = ChoosePixelFormat(hDC, &pfd);
+    if (!pixFmtId) {
+      // Wrong pixel format
+    }
+
+    if (!SetPixelFormat(hDC, pixFmtId, &pfd)) {
+      // Error while setting the pixel format
+    }
+
+    HGLRC hGLContext = wglCreateContext(hDC);
+    wglMakeCurrent(hDC, hGLContext);
+
+    glewExperimental = GL_TRUE;
+    if (glewInit() != GLEW_OK) {
+      free(pGLRendererContext);
+      return;
+    }
+
+    GLint attribs[] = {
+      WGL_CONTEXT_MAJOR_VERSION_ARB,
+      3,
+      WGL_CONTEXT_MINOR_VERSION_ARB,
+      1,
+      WGL_CONTEXT_FLAGS_ARB,
+      0,
+      0
+    };
+
+    if (wglewIsSupported("WGL_ARB_create_context") == 1)
+    {
+      HGLRC hGLEWContext = wglCreateContextAttribsARB(hDC, 0, attribs);
+
+      wglMakeCurrent(NULL, NULL);
+      wglDeleteContext(hGLContext);
+      pGLRendererContext->m_hGLContext = hGLEWContext;
+
+      wglMakeCurrent(hDC, pGLRendererContext->m_hGLContext);
+    }
+
+    if (!pGLRendererContext->m_hGLContext) {
+      // Failed to initialize GL context
+    }
+
+    static const WCHAR szVertFileName[] = L"vert.glsl";
+    static const WCHAR szFragFileName[] = L"frag.glsl";
+
+    PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
+    PWSTR pszSite = PaniViewApp_GetAppDataSitePath(pApp);
+
+    size_t lenVertPath = wcslen(pszSite) + ARRAYSIZE(szVertFileName) + 1;
+    PWSTR pszVertPath = (PWSTR)calloc(1, lenVertPath * sizeof(WCHAR));
+    if (pszVertPath) {
+      StringCchCopy(pszVertPath, lenVertPath, pszSite);
+      PathCchAppend(pszVertPath, lenVertPath, szVertFileName);
+    }
+
+    size_t lenFragPath = wcslen(pszSite) + ARRAYSIZE(szFragFileName) + 1;
+    PWSTR pszFragPath = (PWSTR) calloc(1, lenFragPath * sizeof(WCHAR));
+    if (pszFragPath) {
+      StringCchCopy(pszFragPath, lenFragPath, pszSite);
+      PathCchAppend(pszFragPath, lenFragPath, szFragFileName);
+    }
+
+    pGLRendererContext->m_programId = OpenGLRendererContext_LoadShaders(pGLRendererContext, pszVertPath, pszFragPath);
+
+    free(pszVertPath);
+    free(pszFragPath);
+
+    OpenGLRendererContext_CreateTexture(pGLRendererContext);
+    OpenGLRendererContext_CreateVBO(pGLRendererContext);
+  }
+}
+
+void OrthoMatrix(GLfloat mat[4][4], GLfloat width, GLfloat height)
+{
+  memset(&mat[0][0], 0, sizeof(mat));
+
+  mat[0][0] = 2.0f / -width;
+  mat[1][1] = 2.0f / -height;
+  mat[3][3] = 1.0f;
+}
+
+void MatrixMultiply(GLfloat mat1[4][4], GLfloat mat2[4][4], GLfloat mat3[4][4])
+{
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      mat3[i][j] = 0;
+      for (int k = 0; k < 4; ++k) {
+        mat3[i][k] += mat1[i][k] * mat2[k][j];
+      }
+    }
+  }
+}
+
+void Mat4x4Multiply(GLfloat** mat, GLfloat** mat2)
+{
+  mat[0][0] += mat[1][1];
+}
+
+void OpenGLRendererContext_DrawVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext)
+{
+  GLuint* vertexArray = &pGLRendererContext->m_vertexArray;
+  GLuint* vertexBuffer = &pGLRendererContext->m_vertexBuffer;
+  GLuint* uvBuffer = &pGLRendererContext->m_uvBuffer;
+
+  /* Bind vertex array */
+  glBindVertexArray(*vertexArray);
+
+  /* Select vertex buffer */
+  glEnableVertexAttribArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, *vertexBuffer);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+
+  /* Select uv buffer */
+  glEnableVertexAttribArray(1);
+  glBindBuffer(GL_ARRAY_BUFFER, *uvBuffer);
+  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+
+  float width = pGLRendererContext->m_imageWidth;
+  float height = pGLRendererContext->m_imageHeight;
+
+  if (width > pGLRendererContext->m_viewportWidth) {
+    float ratio = height / width;
+    width = pGLRendererContext->m_viewportWidth;
+    height = pGLRendererContext->m_viewportWidth * ratio;
+  }
+
+  if (height > pGLRendererContext->m_viewportHeight)
+  {
+    float ratio = width / height;
+    width = pGLRendererContext->m_viewportHeight * ratio;
+    height = pGLRendererContext->m_viewportHeight;
+  }
+
+  GLfloat scale[4][4] = {
+    {  -width / 2.0f,  0.0f,  0.0f,  0.0f },
+    {  0.0f,  -height / 2.0f,  0.0f,  0.0f },
+    {  0.0f,  0.0f,  0.0f,  0.0f },
+    {  0.0f,  0.0f,  0.0f,  1.0f },
+  };
+
+  GLfloat ortho[4][4] = { 0 };
+  GLfloat transform[4][4] = { 0 };
+
+  OrthoMatrix(ortho, pGLRendererContext->m_viewportWidth, pGLRendererContext->m_viewportHeight);
+  MatrixMultiply(scale, ortho, transform);
+
+  GLuint transformUniform = glGetUniformLocation(pGLRendererContext->m_programId, "transform");
+  glUniformMatrix4fv(transformUniform, 1, GL_FALSE, &transform[0][0]);
+
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+  glDisableVertexAttribArray(0);
+  glDisableVertexAttribArray(1);
+
+  glBindVertexArray(0);
+}
+
+void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTLDATA pWndData, HWND hWnd)
+{
+  OpenGLRendererContext_CreateDeviceResources(pGLRendererContext, pWndData);
+
+  /* Clear */
+  glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  /* Attach shader */
+  glUseProgram(pGLRendererContext->m_programId);
+
+  /* Attach texture */
+  glBindTexture(GL_TEXTURE_2D, pGLRendererContext->m_textureId);
+
+  /* Draw plane */
+  OpenGLRendererContext_DrawVBO(pGLRendererContext);
+
+  /* Swap buffers */
+  HDC hdc = GetDC(hWnd);
+  SwapBuffers(hdc);
+  ReleaseDC(hWnd, hdc);
+}
+
+void OpenGLRendererContext_LoadWICBitmap(LPOPENGLRENDERERCONTEXT pGLRendererContext, IWICBitmapSource* pBitmapSource)
+{
+  OpenGLRendererContext_CreateTexture(pGLRendererContext);
+
+  UINT width;
+  UINT height;
+  pBitmapSource->lpVtbl->GetSize(pBitmapSource, &width, &height);
+
+  unsigned char *data = calloc(1, width * height * 4);
+  pBitmapSource->lpVtbl->CopyPixels(pBitmapSource, NULL, width * 4, width * height * 4, data);
+
+  glBindTexture(GL_TEXTURE_2D, pGLRendererContext->m_textureId);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, (const void *) data);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  free(data);
+
+  pGLRendererContext->m_imageWidth = (float)width;
+  pGLRendererContext->m_imageHeight = (float)height;
+}
+
+void InitializeOpenGLRendererContextStruct(LPOPENGLRENDERERCONTEXT pGLRendererContext)
+{
+  pGLRendererContext->base.Release = (void (*)(LPRENDERERCONTEXT)) & OpenGLRendererContext_Release;
+  pGLRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int)) & OpenGLRendererContext_Resize;
+  pGLRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTLDATA, HWND)) & OpenGLRendererContext_Draw;
+  pGLRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*)) & OpenGLRendererContext_LoadWICBitmap;
+}
+
+LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer()
+{
+  LPOPENGLRENDERERCONTEXT pGLRendererContext = NULL;
+
+  pGLRendererContext = (LPOPENGLRENDERERCONTEXT) calloc(1, sizeof(OPENGLRENDERERCONTEXT));
+  if (!pGLRendererContext)
+  {
+    return NULL;
+  }
+  InitializeOpenGLRendererContextStruct(pGLRendererContext);
+
+  return pGLRendererContext;
+}
+
+LPRENDERERCONTEXT CreateRendererContext()
+{
+  PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
+  LPRENDERERCONTEXT pRendererContext = NULL;
+
+  switch (pApp->m_settings.nRendererType)
+  {
+  case RENDERER_D2D:
+    pRendererContext = (LPRENDERERCONTEXT) CreateD2DRenderer();
+    break;
+
+  case RENDERER_OPENGL:
+    pRendererContext = (LPRENDERERCONTEXT) CreateOpenGLRenderer();
+    break;
+
+  case RENDERER_GDI:
+    break;
+  }
+
+  return pRendererContext;
+}
+
+LPRENDERERCONTEXT RenderCtl_GetRendererContext(LPRENDERCTLDATA pWndData)
+{
+  return pWndData->m_rendererContext;
+}
+
+BOOL RenderCtl_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
+{
+  UNREFERENCED_PARAMETER(lpcs);
+
+  LPRENDERCTLDATA pWndData = (LPRENDERCTLDATA) calloc(1, sizeof(RENDERCTLDATA));
+  pWndData->m_hWnd = hWnd;
+
+  RenderCtl_InitializeWIC(pWndData);
+  pWndData->m_rendererContext = CreateRendererContext();
+
+  SetWindowLongPtr(hWnd, 0, (LONG_PTR) pWndData);
+  return TRUE;
+}
+
+void RenderCtl_OnSize(HWND hWnd, UINT state, int cx, int cy)
+{
+  UNREFERENCED_PARAMETER(hWnd);
+  UNREFERENCED_PARAMETER(state);
+
+  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
+  assert(wndData);
+
+  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
+  if (pRendererContext)
+  {
+    pRendererContext->Resize(pRendererContext, cx, cy);
+  }
+}
+
+void RenderCtl_OnPaint(HWND hWnd)
+{
+  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
+  assert(wndData);
+
+  HRESULT hr = S_OK;
+
+  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
+  if (pRendererContext)
+  {
+    pRendererContext->Draw(pRendererContext, wndData, hWnd);
   }
 
   ValidateRect(hWnd, NULL);
@@ -1370,93 +1910,12 @@ void RenderCtl_OnDestroy(HWND hWnd)
   LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
   assert(wndData);
 
-  SAFE_RELEASE(wndData->m_pD2DFactory);
-  SAFE_RELEASE(wndData->m_pRenderTarget);
-  SAFE_RELEASE(wndData->m_pLightSlateGrayBrush);
-  SAFE_RELEASE(wndData->m_pCornflowerBlueBrush);
-
-  free(wndData);
-}
-
-HRESULT RenderCtl_CreateDeviceResources(LPRENDERCTLDATA wndData)
-{
-  HRESULT hr = S_OK;
-
-  if (!wndData->m_pRenderTarget) {
-    RECT rcClient;
-    D2D1_SIZE_U size;
-
-    GetClientRect(wndData->m_hWnd, &rcClient);
-    size = (D2D1_SIZE_U){
-      rcClient.right - rcClient.left,
-      rcClient.bottom - rcClient.top
-    };
-
-    /* TODO: Research */
-    D2D1_RENDER_TARGET_PROPERTIES rtProp = { 0 };
-    rtProp.type = D2D1_RENDER_TARGET_TYPE_DEFAULT;
-    rtProp.pixelFormat.format = DXGI_FORMAT_UNKNOWN;
-    rtProp.pixelFormat.alphaMode = D2D1_ALPHA_MODE_UNKNOWN;
-    rtProp.dpiX = DEFAULT_DPI;
-    rtProp.dpiY = DEFAULT_DPI;
-    rtProp.usage = D2D1_RENDER_TARGET_USAGE_NONE;
-    rtProp.minLevel = D2D1_FEATURE_LEVEL_DEFAULT;
-
-    D2D1_HWND_RENDER_TARGET_PROPERTIES rtHwndProp = { 0 };
-    rtHwndProp.hwnd = wndData->m_hWnd;
-    rtHwndProp.pixelSize = size; /* CHECK */
-    rtHwndProp.presentOptions = D2D1_PRESENT_OPTIONS_NONE;
-
-    /* Create a Direct2D render target */
-    hr = dxID2D1Factory_CreateHwndRenderTarget(
-        wndData->m_pD2DFactory,
-        &rtProp,
-        &rtHwndProp,
-        &wndData->m_pRenderTarget
-    );
-
-    /*
-     * Code from D2D Drawing demo
-     * It still may be usable if we planned to add annotation features
-     * */
-#if 0
-    /* Create brushes for drawing */
-    if (SUCCEEDED(hr))
-    {
-      D2D1_COLOR_F color = D2DColorFromRGB(RGB(0x77, 0x88, 0x99));
-
-      /* Create a gray brush */
-      hr = wndData->m_pRenderTarget->lpVtbl->Base.CreateSolidColorBrush(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-          &color,
-          NULL,
-          &wndData->m_pLightSlateGrayBrush);
-    }
-
-    if (SUCCEEDED(hr))
-    {
-      D2D1_COLOR_F color = D2DColorFromRGB(RGB(0x64, 0x95, 0xED));
-
-      /* Create a blue brush */
-      hr = wndData->m_pRenderTarget->lpVtbl->Base.CreateSolidColorBrush(
-          (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-          &color,
-          NULL,
-          &wndData->m_pCornflowerBlueBrush);
-    }
-#endif /* if 0 */
+  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
+  if (pRendererContext) {
+    pRendererContext->Release(pRendererContext);
   }
 
-  return hr;
-}
-
-void RenderCtl_DiscardDeviceResources(LPRENDERCTLDATA wndData)
-{
-  SAFE_RELEASE(wndData->m_pRenderTarget);
-  /*
-  SAFE_RELEASE(wndData->m_pLightSlateGrayBrush);
-  SAFE_RELEASE(wndData->m_pCornflowerBlueBrush);
-  */
+  free(wndData);
 }
 
 COMDLG_FILTERSPEC c_rgReadTypes[] = {
@@ -1556,6 +2015,63 @@ HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA wndData, LPWSTR pszPath)
   return hResult;
 }
 
+IWICBitmapSource* WICLoadFromMemory(LPRENDERCTLDATA pWndData, int width, int height, unsigned char* data, REFWICPixelFormatGUID pixelFormat)
+{
+  HRESULT hr = S_OK;
+
+  IWICBitmap* pIWICBitmap;
+  IWICFormatConverter* pConvertedSourceBitmap = NULL;
+
+  hr = pWndData->m_pIWICFactory->lpVtbl->CreateBitmapFromMemory(
+    pWndData->m_pIWICFactory,
+    width, height,
+    &GUID_WICPixelFormat8bppGray,
+    width, width * height,
+    (BYTE*) data,
+    &pIWICBitmap
+  );
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  /* Convert the image to 32bppPBGRA */
+  hr = pWndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
+    pWndData->m_pIWICFactory,
+    &pConvertedSourceBitmap);
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  hr = pConvertedSourceBitmap->lpVtbl->Initialize(
+    pConvertedSourceBitmap,
+    (IWICBitmapSource*) pIWICBitmap, /* Input bitmap to convert */
+    &GUID_WICPixelFormat32bppPBGRA, /* Destination pixel format */
+    WICBitmapDitherTypeNone,  /* No dither pattern */
+    NULL, /* Do not specify particular color pallete */
+    0.0f, /* Alpha threshold */
+    WICBitmapPaletteTypeCustom);  /* Palette transform type */
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    goto fail;
+  }
+
+  SAFE_RELEASE(pWndData->m_pConvertedSourceBitmap);
+  pWndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
+
+fail:
+  if (FAILED(hr)) {
+    SAFE_RELEASE(pConvertedSourceBitmap);
+  }
+  SAFE_RELEASE(pIWICBitmap);
+
+  return pConvertedSourceBitmap;
+}
+
 HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA wndData, PWSTR pszPath, FILE *pf)
 {
   HRESULT hr = E_FAIL;
@@ -1577,108 +2093,38 @@ HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA wndData, PWSTR pszPath, FILE *
   unsigned char *data = (unsigned char *)calloc(dataLength, 1);
   fread(data, dataLength, 1, pf);
 
-  /* Init WIC Bitmap with grayscale image data */
-  hr = wndData->m_pIWICFactory->lpVtbl->CreateBitmapFromMemory(
-      wndData->m_pIWICFactory,
-      width,
-      height,
-      &GUID_WICPixelFormat8bppGray,
-      width,
-      width * height,
-      (BYTE*)data,
-      &pIWICBitmap
-    );
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    goto fail;
+  pConvertedSourceBitmap = WICLoadFromMemory(wndData, width, height, data, &GUID_WICPixelFormat8bppGray);
+  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
+  if (pRendererContext) {
+    pRendererContext->LoadWICBitmap(pRendererContext, pConvertedSourceBitmap);
   }
-
-  /* Convert the image to 32bppPBGRA */
-  hr = wndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
-      wndData->m_pIWICFactory,
-      &pConvertedSourceBitmap);
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    goto fail;
-  }
-
-  hr = pConvertedSourceBitmap->lpVtbl->Initialize(
-      pConvertedSourceBitmap,
-      (IWICBitmapSource *)pIWICBitmap, /* Input bitmap to convert */
-      &GUID_WICPixelFormat32bppPBGRA, /* Destination pixel format */
-      WICBitmapDitherTypeNone,  /* No dither pattern */
-      NULL, /* Do not specify particular color pallete */
-      0.f,  /* Alpha threshold */
-      WICBitmapPaletteTypeCustom);  /* Palette transform type */
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    goto fail;
-  }
-
-  hr = dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
-      (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-      (IWICBitmapSource *)pConvertedSourceBitmap,
-      NULL,
-      &pD2DBitmap
-  );
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    goto fail;
-
-  }
-
-  /* Done successfully. Actually do the changes into structure. */
-
-  /* Release previously selected bitmaps */
-  SAFE_RELEASE(wndData->m_pConvertedSourceBitmap);
-  SAFE_RELEASE(wndData->m_pD2DBitmap);
-
-  /* Set current bitmaps */
-  wndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
-  wndData->m_pD2DBitmap = pD2DBitmap;
-
-  /* Prevent freeing succeed resources */
-  pConvertedSourceBitmap = NULL;
-  pD2DBitmap = NULL;
 
   /* Copy path to window data */
   StringCchCopy(wndData->szPath, MAX_PATH, pszPath);
 
 fail:
-  SAFE_RELEASE(pIWICBitmap);
-  SAFE_RELEASE(pConvertedSourceBitmap);
-  SAFE_RELEASE(pD2DBitmap);
+
   free(data);
 
   return hr;
 }
 
-HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
+IWICBitmapSource* WICDecodeFromFilename(LPRENDERCTLDATA pWndData, LPWSTR pszPath)
 {
   HRESULT hr = S_OK;
 
-  IWICBitmapDecoder *pDecoder = NULL;
-  IWICBitmapFrameDecode *pFrame = NULL;
-  IWICFormatConverter *pConvertedSourceBitmap = NULL;
-  ID2D1Bitmap *pD2DBitmap = NULL;
+  IWICBitmapDecoder* pDecoder = NULL;
+  IWICBitmapFrameDecode* pFrame = NULL;
+  IWICFormatConverter* pConvertedSourceBitmap = NULL;
 
   /* Request image decoder COM object */
-  hr = wndData->m_pIWICFactory->lpVtbl->CreateDecoderFromFilename(
-      wndData->m_pIWICFactory,
-      pszPath,  /* Path to the image to be decoded */
-      NULL, /* Not preferring any particular vendor */
-      GENERIC_READ, /* Desired read access to the file */
-      WICDecodeMetadataCacheOnDemand, /* Cache metadata when needed */
-      &pDecoder);
-
+  hr = pWndData->m_pIWICFactory->lpVtbl->CreateDecoderFromFilename(
+    pWndData->m_pIWICFactory,
+    pszPath,  /* Path to the image to be decoded */
+    NULL, /* Not preferring any particular vendor */
+    GENERIC_READ, /* Desired read access to the file */
+    WICDecodeMetadataCacheOnDemand, /* Cache metadata when needed */
+    &pDecoder);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
     assert(FALSE);
@@ -1687,7 +2133,6 @@ HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
 
   /* Decode image */
   hr = pDecoder->lpVtbl->GetFrame(pDecoder, 0, &pFrame);
-
   if (FAILED(hr)) {
     PopupError(hr, NULL);
     assert(FALSE);
@@ -1695,10 +2140,9 @@ HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
   }
 
   /* Convert the frame to 32bppPBGRA */
-  hr = wndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
-      wndData->m_pIWICFactory,
-      &pConvertedSourceBitmap);
-
+  hr = pWndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
+    pWndData->m_pIWICFactory,
+    &pConvertedSourceBitmap);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
     assert(FALSE);
@@ -1706,51 +2150,48 @@ HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
   }
 
   hr = pConvertedSourceBitmap->lpVtbl->Initialize(
-      pConvertedSourceBitmap,
-      (IWICBitmapSource *)pFrame, /* Input bitmap to convert */
-      &GUID_WICPixelFormat32bppPBGRA, /* Destination pixel format */
-      WICBitmapDitherTypeNone,  /* No dither pattern */
-      NULL, /* Do not specify particular color pallete */
-      0.f,  /* Alpha threshold */
-      WICBitmapPaletteTypeCustom);  /* Palette transform type */
-
+    pConvertedSourceBitmap,
+    (IWICBitmapSource*)pFrame, /* Input bitmap to convert */
+    &GUID_WICPixelFormat32bppPBGRA, /* Destination pixel format */
+    WICBitmapDitherTypeNone,  /* No dither pattern */
+    NULL, /* Do not specify particular color pallete */
+    0.f,  /* Alpha threshold */
+    WICBitmapPaletteTypeCustom);  /* Palette transform type */
   if (FAILED(hr)) {
     PopupError(hr, NULL);
     assert(FALSE);
     goto fail;
   }
 
-  hr = dxID2D1RenderTarget_CreateBitmapFromWicBitmap(
-      (ID2D1RenderTarget *)wndData->m_pRenderTarget,
-      (IWICBitmapSource *)pConvertedSourceBitmap,
-      NULL,
-      &pD2DBitmap
-  );
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    goto fail;
-  }
-
-  /* Done successfully. Actually do the changes into structure. */
-  SAFE_RELEASE(wndData->m_pConvertedSourceBitmap);
-  SAFE_RELEASE(wndData->m_pD2DBitmap);
-
-  wndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
-  wndData->m_pD2DBitmap = pD2DBitmap;
-
-  pConvertedSourceBitmap = NULL;
-  pD2DBitmap = NULL;
-
-  StringCchCopy(wndData->szPath, MAX_PATH, pszPath);
+  SAFE_RELEASE(pWndData->m_pConvertedSourceBitmap);
+  pWndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
 
 fail:
-  SAFE_RELEASE(pConvertedSourceBitmap);
-  SAFE_RELEASE(pD2DBitmap);
+
   SAFE_RELEASE(pDecoder);
   SAFE_RELEASE(pFrame);
 
+  if (FAILED(hr)) {
+    SAFE_RELEASE(pConvertedSourceBitmap);
+  }
+
+  return pConvertedSourceBitmap;
+}
+
+HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
+{
+  HRESULT hr = S_OK;
+
+  IWICFormatConverter *pConvertedSourceBitmap = NULL;
+
+  pConvertedSourceBitmap = WICDecodeFromFilename(wndData, pszPath);
+
+  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
+  if (pRendererContext) {
+    pRendererContext->LoadWICBitmap(pRendererContext, (IWICBitmapSource *) pConvertedSourceBitmap);
+  }
+
+  StringCchCopy(wndData->szPath, MAX_PATH, pszPath);
   return hr;
 }
 

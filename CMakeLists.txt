@@ -8,6 +8,8 @@ include(CTest)
 set(BUILDSTRING "Built by: $ENV{USER} on <$ENV{NAME}>")
 
 find_package(Git)
+find_package(GLEW REQUIRED)
+
 if(GIT_FOUND)
   execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
@@ -55,7 +57,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Werror -pedantic)
 target_link_options(${PROJECT_NAME} PRIVATE -municode)
 endif()
 
-target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 shlwapi pathcch d2d1 windowscodecs)
+target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 shlwapi pathcch d2d1 windowscodecs GLEW::GLEW)
 
 if(BUILD_TESTING)
   add_subdirectory(test)
