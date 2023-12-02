@@ -81,6 +81,10 @@ typedef struct _tagOPENGLRENDERERCONTEXT {
 
 typedef struct _tagGDIRENDERERCONTEXT {
   RENDERERCONTEXT base;
+
+  HBITMAP m_hBitmap;
+  int m_width;
+  int m_height;
 } GDIRENDERERCONTEXT, *LPGDIRENDERERCONTEXT;
 
 /* Render control data */
@@ -290,6 +294,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     PopupError(dwError, NULL);
     return -1;
   }
+
+  app->hWndMain = hWndMain;
 
   ShowWindow(hWndMain, nCmdShow);
   UpdateWindow(hWndMain); /* Force window contents paint inplace after
@@ -932,11 +938,15 @@ BOOL PaniView_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
         (INT_PTR) L"Actual Size" },
     { 5, IDM_FITSIZE, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
         (INT_PTR) L"Fit" },
+    { 6, 0, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
+        (INT_PTR)L"Rotate" },
+    { 7, 0, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
+        (INT_PTR)L"Pan" },
   };
 
   /* Add buttons */
   SendMessage(hWndToolbar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
-  SendMessage(hWndToolbar, TB_ADDBUTTONS, (WPARAM)6, (LPARAM)&tbButtons);
+  SendMessage(hWndToolbar, TB_ADDBUTTONS, (WPARAM)8, (LPARAM)&tbButtons);
 
   /* Resize the toolbar, and then show it. */
   SendMessage(hWndToolbar, TB_AUTOSIZE, 0, 0);
@@ -1633,11 +1643,6 @@ void MatrixMultiply(GLfloat mat1[4][4], GLfloat mat2[4][4], GLfloat mat3[4][4])
   }
 }
 
-void Mat4x4Multiply(GLfloat** mat, GLfloat** mat2)
-{
-  mat[0][0] += mat[1][1];
-}
-
 void OpenGLRendererContext_DrawVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext)
 {
   GLuint* vertexArray = &pGLRendererContext->m_vertexArray;
@@ -1764,6 +1769,191 @@ LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer()
   return pGLRendererContext;
 }
 
+void GDIRendererContext_Release(LPGDIRENDERERCONTEXT pGDIRendererContext)
+{
+  DeleteObject(pGDIRendererContext->m_hBitmap);
+
+  free(pGDIRendererContext);
+}
+
+void GDIRendererContext_Resize(LPGDIRENDERERCONTEXT pGDIRendererContext, int cx, int cy)
+{
+
+}
+
+int Rect_GetWidth(LPRECT prc)
+{
+  return prc->right - prc->left;
+}
+
+int Rect_GetHeight(LPRECT prc)
+{
+  return prc->bottom - prc->top;
+}
+
+BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop)
+{
+  if (rcDest.left < 0)
+  {
+    float factor = (float)abs(rcDest.left) / (float)(abs(rcDest.left) + rcDest.right);
+
+    rcSrc.left = rcSrc.right * factor;
+    rcSrc.right -= rcSrc.left;
+    rcDest.left = 0;
+   
+  }
+
+  if (rcDest.top < 0)
+  {
+    float factor = (float)abs(rcDest.top) / (float)(abs(rcDest.top) + rcDest.bottom);
+
+    rcSrc.top = rcSrc.bottom * factor;
+    rcSrc.bottom -= rcSrc.top;
+    rcDest.top = 0;
+  }
+
+  return StretchBlt(hdcDest,
+    rcDest.left,
+    rcDest.top,
+    Rect_GetWidth(&rcDest),
+    Rect_GetHeight(&rcDest),
+    hdcSrc,
+    rcSrc.left, rcSrc.top, rcSrc.right, rcSrc.bottom,
+    rop);
+}
+
+void RectTranslate(LPRECT prc, float x, float y)
+{
+  prc->left += (LONG)x;
+  prc->right += (LONG)x;
+  prc->top += (LONG)y;
+  prc->bottom += (LONG)y;
+}
+
+void RectMatrixMultiply(LPRECT prc, float mat[4][4])
+{
+  prc->left *= mat[0][0];
+  prc->right *= mat[0][0];
+  prc->top *= mat[1][1];
+  prc->bottom *= mat[1][1];
+}
+
+void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERCTLDATA pWndData, HWND hWnd)
+{
+  HDC hdc;
+  hdc = GetDC(hWnd);
+
+  HDC hBitmapDC = CreateCompatibleDC(hdc);
+  HBITMAP hOldBitmap = (HBITMAP) SelectObject(hBitmapDC, (HGDIOBJ) pGDIRendererContext->m_hBitmap);
+
+  RECT rc = {0};
+  GetClientRect(hWnd, &rc);
+
+  FillRect(hdc, &rc, CreateSolidBrush(RGB(0, 0xFF, 0)));
+
+  int imageWidth = pGDIRendererContext->m_width;
+  int imageHeight = pGDIRendererContext->m_height;
+
+  int viewX = 0;
+  int viewY = 0;
+  int viewWidth = Rect_GetWidth(&rc);
+  int viewHeight = Rect_GetHeight(&rc);
+
+  RECT rcDest = {0};
+  rcDest.left = 0;
+  rcDest.top = 0;
+  rcDest.right = Rect_GetWidth(&rc);
+  rcDest.bottom = Rect_GetHeight(&rc);
+
+  RECT rcSrc = {0};
+  rcSrc.left = 0;
+  rcSrc.top = 0;
+  rcSrc.right = imageWidth;
+  rcSrc.bottom = imageHeight;
+
+  RectTranslate(&rcDest, -((float)viewWidth / 2.0f), -((float)viewHeight / 2.0f));
+
+  if (imageWidth > viewWidth) {
+    float ratio = imageHeight / (float)imageWidth;
+    imageWidth = viewWidth;
+    imageHeight = viewWidth * ratio;
+  }
+
+  if (imageHeight > viewHeight)
+  {
+    float ratio = imageWidth / (float)imageHeight;
+    imageWidth = viewHeight * ratio;
+    imageHeight = viewHeight;
+  }
+
+  float mat[4][4] = {
+    {  2.0f / (float)viewWidth,  0.0f,  0.0f,  0.0f},
+    {  0.0f,  2.0f / (float)viewHeight,  0.0f,  0.0f},
+    {  0.0f,  0.0f,  0.0f,  0.0f },
+    {  0.0f,  0.0f,  0.0f,  1.0f },
+  };
+  float mat2[4][4] = {
+    { (float)imageWidth / 2.0f, 0.0f, 0.0f, 0.0f },
+    { 0.0f, (float)imageHeight / 2.0f, 0.0f, 0.0f },
+    { 0.0f, 0.0f, 0.0f, 0.0f },
+    { 0.0f, 0.0f, 0.0f, 1.0f },
+  };
+
+  float mat3[4][4] = {0};
+  MatrixMultiply(mat, mat2, mat3);
+
+  RectMatrixMultiply(&rcDest, mat3);
+  RectTranslate(&rcDest, (float)viewWidth / 2.0f, (float)viewHeight / 2.0f);
+
+  // RectTranslate(&rcDest, 40.f, 40.f);
+
+  SetStretchBltMode(hdc, HALFTONE);
+  RectBlt(hdc, rcDest, hBitmapDC, rcSrc, SRCCOPY);
+
+  SelectObject(hBitmapDC, (HGDIOBJ) hOldBitmap);
+
+  ReleaseDC(hWnd, hdc);
+}
+
+void GDIRendererContext_LoadWICBitmap(LPGDIRENDERERCONTEXT pGDIRendererContext, IWICBitmapSource* pBitmapSource)
+{
+  UINT width;
+  UINT height;
+  pBitmapSource->lpVtbl->GetSize(pBitmapSource, &width, &height);
+  pGDIRendererContext->m_width = width;
+  pGDIRendererContext->m_height = height;
+
+  unsigned char* data = (unsigned char *) calloc(1, width * height * 4);
+
+  pBitmapSource->lpVtbl->CopyPixels(pBitmapSource, NULL, width * 4, width * height * 4, data);
+
+  pGDIRendererContext->m_hBitmap = CreateBitmap(width, height, 1, 32, data);
+  
+  free(data);
+}
+
+void InitializeGDIRendererContextStruct(LPGDIRENDERERCONTEXT pGDIRendererContext)
+{
+  pGDIRendererContext->base.Release = (void (*)(LPRENDERERCONTEXT)) & GDIRendererContext_Release;
+  pGDIRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int)) & GDIRendererContext_Resize;
+  pGDIRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTLDATA, HWND)) & GDIRendererContext_Draw;
+  pGDIRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*)) &GDIRendererContext_LoadWICBitmap;
+}
+
+LPGDIRENDERERCONTEXT CreateGDIRenderer()
+{
+  LPGDIRENDERERCONTEXT pGDIRendererContext = NULL;
+
+  pGDIRendererContext = (LPGDIRENDERERCONTEXT)calloc(1, sizeof(GDIRENDERERCONTEXT));
+  if (!pGDIRendererContext)
+  {
+    return NULL;
+  }
+  InitializeGDIRendererContextStruct(pGDIRendererContext);
+
+  return pGDIRendererContext;
+}
+
 LPRENDERERCONTEXT CreateRendererContext()
 {
   PANIVIEWAPP* pApp = PaniViewApp_GetInstance();
@@ -1780,6 +1970,7 @@ LPRENDERERCONTEXT CreateRendererContext()
     break;
 
   case RENDERER_GDI:
+    pRendererContext = (LPRENDERERCONTEXT) CreateGDIRenderer();
     break;
   }
 
@@ -2521,7 +2712,16 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
           HWND hRendererSel = GetDlgItem(hWnd, IDC_BACKENDSEL);
           int nCurSel = ComboBox_GetCurSel(hRendererSel);
           int rendererType = (int) ComboBox_GetItemData(hRendererSel, nCurSel);
-          pSettings->nRendererType = rendererType;
+          
+          if (rendererType != pSettings->nRendererType)
+          {
+            MAINFRAMEDATA* pMainWndData = GetWindowLongPtr(pApp->hWndMain, 0);
+            RENDERCTLDATA* pRenderCtlData = GetWindowLongPtr(pMainWndData->hRenderer, 0);
+            
+            pSettings->nRendererType = rendererType;
+
+            pRenderCtlData->m_rendererContext = CreateRendererContext();
+          }          
 
           EndDialog(hWnd, 0);
           return TRUE;
