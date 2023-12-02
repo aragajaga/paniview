@@ -7,6 +7,8 @@ include(CTest)
 # Generate PE private build string
 set(BUILDSTRING "Built by: $ENV{USER} on <$ENV{NAME}>")
 
+set(GLEW_ROOT "C:\\thirdparty\\msvc-x86_64")
+
 find_package(Git)
 find_package(GLEW REQUIRED)
 
