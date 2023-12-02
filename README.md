@@ -1,4 +1,4 @@
-![](https://i.imgur.com/OKosNCL.png)
+![](https://i.imgur.com/eYXvThR.png)
 # PaniView
 ![](https://shields.io/badge/C99-blue?logo=c)
 ![](https://shields.io/badge/Windows-blue?logo=windows)
