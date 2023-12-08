@@ -9,6 +9,7 @@
 #include "resource.h"
 
 #include "dlnklist.h"
+#include "hashmap.h"
 
 #include <GL/glew.h>
 #include <GL/wglew.h>
@@ -49,24 +50,23 @@ typedef struct _tagMAINFRAMEDATA {
   HWND hToolbar;
 } MAINFRAMEDATA, *LPMAINFRAMEDATA;
 
-typedef struct _tagRENDERCTLDATA RENDERCTLDATA, *LPRENDERCTLDATA;
+typedef struct _tagRENDERCTL2 RENDERCTL2, * LPRENDERCTL2;
 typedef struct _tagRENDERERCONTEXT RENDERERCONTEXT, *LPRENDERERCONTEXT;
 
 /* Base renderer context data structure */
 struct _tagRENDERERCONTEXT {
   void (*Release)(LPRENDERERCONTEXT pRendererContext);
   void (*Resize)(LPRENDERERCONTEXT pRendererContext, int cx, int cy);
-  void (*Draw)(LPRENDERERCONTEXT pRendererContext, LPRENDERCTLDATA pRenderCtl, HWND hWnd);
+  void (*Draw)(LPRENDERERCONTEXT pRendererContext, LPRENDERCTL2 pRenderCtl);
   void (*LoadWICBitmap)(LPRENDERERCONTEXT pRendererContext, IWICBitmapSource* pIWICBitmapSource);
 };
+
+LPRENDERERCONTEXT CreateRendererContext(void);
 
 /* Render control data */
 struct _tagRENDERCTLDATA {
   WCHAR szPath[MAX_PATH];
   HWND m_hWnd;
-  LPRENDERERCONTEXT m_rendererContext;
-  IWICImagingFactory* m_pIWICFactory;
-  IWICFormatConverter* m_pConvertedSourceBitmap;
 };
 
 /*
@@ -102,11 +102,16 @@ enum {
   MIME_IMAGE_PGM = 5,
 };
 
+typedef struct _tagSETTINGS SETTINGS, * LPSETTINGS;
+typedef struct _tagNAVIASSOCENTRY NAVIASSOCENTRY, * LPNAVIASSOCENTRY;
+typedef struct _tagPANIVIEWAPP PANIVIEWAPP, * LPPANIVIEWAPP;
+
 /*
  *  Settings data struct
  *  This will be saved as binary to the settings.dat
  */
-typedef struct _tagSETTINGS {
+
+struct _tagSETTINGS {
   unsigned char magic[4];
   unsigned long nVersion;
   unsigned long checksum;
@@ -117,25 +122,18 @@ typedef struct _tagSETTINGS {
   int nRendererType;
   int nToolbarTheme;
   BOOL bFit;
-} SETTINGS, *LPSETTINGS;
+};
 
-typedef struct _tagNAVIASSOCENTRY {
+struct _tagNAVIASSOCENTRY {
   WCHAR szExtension[80];
   int nMimeType;
-} NAVIASSOCENTRY;
-
-typedef struct _tagPANIVIEWAPP {
-  HWND hWndMain;
-  SETTINGS m_settings;
-  PWSTR m_appDataSite;
-  PWSTR m_appCfgPath;
-} PANIVIEWAPP, *LPPANIVIEWAPP;
+};
 
 HINSTANCE g_hInst;
 
-static const char g_cfgMagic[4] = { 'P', 'N', 'V', 0xE5 };
+const unsigned char g_cfgMagic[4] = { 'P', 'N', 'V', 0xE5 };
 
-const unsigned char g_pngMagic[] = { '‰', 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+const unsigned char g_pngMagic[] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 const unsigned char g_gifMagic[] = { 'G', 'I', 'F', '8'};
 const unsigned char g_jpgMagic[] = { 0xFF, 0xD8, 0xFF };
 const unsigned char g_webpMagic[] = { 'R', 'I', 'F', 'F', 'W', 'E', 'B', 'P' };
@@ -143,63 +141,119 @@ const unsigned char g_pgmMagic[] = { 'P', '5' };
 
 const WCHAR szPaniView[] = L"PaniView";
 const WCHAR szPaniViewClassName[] = L"PaniView_Main";
-const WCHAR szRenderCtlClassName[] = L"_D2DRenderCtl78";
+const WCHAR szRenderCtlClassName[] = L"PaniView_Renderer";
 
 PWSTR g_pszAboutString;
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow);
 
-BOOL InitInstance(HINSTANCE);
-void PopupError(DWORD, HWND);
-BOOL PopupEULADialog();
-BOOL GetApplicationDataSitePath(PWSTR*);
+BOOL InitInstance(HINSTANCE hInstance);
+void PopupError(DWORD dwError, HWND hParent);
+BOOL PopupEULADialog(void);
+BOOL GetApplicationDataSitePath(PWSTR* ppStr);
 
-unsigned long crc32(unsigned char *, size_t);
+unsigned long crc32(unsigned char *data, size_t length);
+
+int compareHWND(const void* key1, size_t key1Size, const void* key2, size_t key2Size);
 
 /* Direct2D Utility functions forward declaration */
-static inline D2D1_MATRIX_3X2_F D2DUtilMatrixIdentity();
-static inline D2D1_MATRIX_3X2_F D2DUtilMakeTranslationMatrix(D2D1_SIZE_F);
-static inline D2D1_MATRIX_3X2_F D2DUtilMatrixMultiply(D2D1_MATRIX_3X2_F *, D2D_MATRIX_3X2_F *);
-static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF, float);
-static inline D2D1_COLOR_F D2DColorFromRGB(COLORREF);
+static inline D2D1_MATRIX_3X2_F D2DUtilMatrixIdentity(void);
+static inline D2D1_MATRIX_3X2_F D2DUtilMakeTranslationMatrix(D2D1_SIZE_F size);
+static inline D2D1_MATRIX_3X2_F D2DUtilMatrixMultiply(D2D1_MATRIX_3X2_F *a, D2D1_MATRIX_3X2_F *b);
+static inline D2D1_COLOR_F D2DColorFromRGBAndAlpha(COLORREF color, float alpha);
+static inline D2D1_COLOR_F D2DColorFromRGB(COLORREF color);
+
+size_t GetPfFileSize(FILE* fp);
+void OrthoMatrix(GLfloat mat[4][4], GLfloat width, GLfloat height);
+void MatrixMultiply(GLfloat mat1[4][4], GLfloat mat2[4][4], GLfloat mat3[4][4]);
+int Rect_GetWidth(LPRECT prc);
+int Rect_GetHeight(LPRECT prc);
+BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop);
+void RectMatrixMultiply(LPRECT prc, float mat[4][4]);
+void RectTranslate(LPRECT prc, float x, float y);
 
 BOOL Settings_LoadFile(SETTINGS *pSettings, PWSTR pszPath);
 BOOL Settings_SaveFile(SETTINGS *pSettings, PWSTR pszPath);
 BOOL Settings_LoadDefault(SETTINGS *pSettings);
 
-/* Application object methods forward declarations */
-static inline LPPANIVIEWAPP GetApp();
-BOOL PaniViewApp_Initialize(LPPANIVIEWAPP pApp);
-PWSTR PaniViewApp_GetAppDataSitePath(LPPANIVIEWAPP pApp);
-PWSTR PaniViewApp_GetSettingsFilePath(LPPANIVIEWAPP pApp);
-BOOL PaniViewApp_CreateAppDataSite(LPPANIVIEWAPP pApp);
-BOOL PaniViewApp_LoadSettings(LPPANIVIEWAPP pApp);
-BOOL PaniViewApp_SaveSettings(LPPANIVIEWAPP pApp);
-BOOL PaniViewApp_LoadDefaultSettings(LPPANIVIEWAPP pApp);
+IWICBitmapSource* WICDecodeFromFilename(LPWSTR pszPath);
+IWICBitmapSource* WICLoadFromMemory(int width, int height, unsigned char* data, REFWICPixelFormatGUID pixelFormat);
 
-/* Application window forward-declared methods */
-BOOL PaniView_RegisterClass(HINSTANCE hInstance);
-LRESULT CALLBACK PaniView_WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-BOOL PaniView_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs);
-void PaniView_OnSize(HWND hWnd, UINT state, int cx, int cy);
-void PaniView_OnCommand(HWND hWnd, int id, HWND hwndCtl, UINT codeNotify);
-void PaniView_OnPaint(HWND hWnd);
-void PaniView_OnDestroy(HWND hWnd);
+/* Window */
+typedef struct _tagWINDOW WINDOW, * LPWINDOW;
+struct _tagWINDOW {
+  void (*PreRegisterClass)(LPWINDOW pWindow, LPWNDCLASSEX lpwcex);
+  void (*PreCreate)(LPWINDOW pWindow, LPCREATESTRUCT lpcs);
 
-/* Renderer control forward-declared methods */
-BOOL RenderCtl_RegisterClass(HINSTANCE);
-LRESULT CALLBACK RenderCtl_WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-BOOL RenderCtl_OnCreate(HWND hWnd, LPCREATESTRUCT);
-void RenderCtl_OnSize(HWND hWnd, UINT state, int cx, int cy);
-void RenderCtl_OnPaint(HWND hWnd);
-void RenderCtl_OnDestroy(HWND hWnd);
-void RenderCtl_OnSendNudes(HWND hWnd);
-void RenderCtl_OnFilePrev(HWND hWnd);
-void RenderCtl_OnFileNext(HWND hWnd);
-void RenderCtl_OnFitCmd(HWND hWnd);
-HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA, LPWSTR);
-HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA, PWSTR, FILE*);
-HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA, LPWSTR);
+  LRESULT (*WndProc)(LPWINDOW pWindow, UINT message, WPARAM wParam, LPARAM lParam);
+  LRESULT (*DefaultWndProc)(LPWINDOW pWindow, UINT message, WPARAM wParam, LPARAM lParam);
+
+  void (*OnCreate)(LPWINDOW pWindow, LPCREATESTRUCT lpcs);
+  BOOL (*OnCommand)(LPWINDOW pWindow, WPARAM wParam, LPARAM lParam);
+  void (*OnPaint)(LPWINDOW pWindow);
+  void (*OnDestroy)(LPWINDOW pWindow);
+
+  HWND hWnd;
+  PWSTR pszClassName;
+  CREATESTRUCT cs;
+  WNDCLASSEX wcex;
+};
+
+void Window_Init(LPWINDOW pWindow);
+HWND Window_Create(LPWINDOW pWindow, HWND hParent);
+void Window_RegisterClass(LPWINDOW pWindow);
+
+LRESULT Window_WndProc(LPWINDOW pWindow, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT Window_DefaultWindowProc(LPWINDOW pWindow, UINT message, WPARAM wParam, LPARAM lParam);
+
+void Window_OnCreate(LPWINDOW pWindow, LPCREATESTRUCT lpcs);
+BOOL Window_OnCommand(LPWINDOW pWindow, WPARAM wParam, LPARAM lParam);
+void Window_OnPaint(LPWINDOW pWindow);
+void Window_OnDestroy(LPWINDOW pWindow);
+
+/* Window Map */
+HASHMAP g_windowMap;
+
+void WindowMap_Initialize(void);
+void WindowMap_Add(HWND hWnd, LPWINDOW pWindow);
+LPWINDOW WindowMap_Find(HWND hWnd);
+
+/* RenderCtl2 */
+struct _tagRENDERCTL2 {
+  WINDOW base;
+};
+
+void RenderCtl2_Init(LPRENDERCTL2 pRenderCtl);
+HWND RenderCtl2_Create(LPRENDERCTL2 pRenderCtl, HWND hParent);
+LRESULT RenderCtl2_WndProc(LPRENDERCTL2 pRenderCtl, UINT message, WPARAM wParam, LPARAM lParam);
+void RenderCtl2_PreCreate(LPRENDERCTL2 pRenderCtl, LPCREATESTRUCT lpcs);
+void RenderCtl2_PreRegister(LPRENDERCTL2 pRenderCtl, LPWNDCLASSEX lpwcex);
+void RenderCtl2_OnCreate(LPRENDERCTL2 pRenderCtl, LPCREATESTRUCT lpcs);
+void RenderCtl2_OnSize(LPRENDERCTL2 pRenderCtl, UINT state, int cx, int cy);
+void RenderCtl2_OnPaint(LPRENDERCTL2 pRenderCtl);
+BOOL RenderCtl2_OnCommand(LPRENDERCTL2 pRenderCtl, WPARAM wParam, LPARAM lParam);
+void RenderCtl2_OnDestroy(LPRENDERCTL2 pRenderCtl);
+
+/* PaniView Frame */
+typedef struct _tagPANIVIEWFRAME PANIVIEWFRAME, *LPPANIVIEWFRAME;
+struct _tagPANIVIEWFRAME {
+  WINDOW base;
+  HWND hToolbar;
+};
+
+void PaniViewFrame_Init(LPPANIVIEWFRAME pPaniViewFrame);
+HWND PaniViewFrame_Create(LPPANIVIEWFRAME pPaniViewFrame);
+LRESULT PaniViewFrame_WndProc(LPPANIVIEWFRAME pPaniViewFrame, UINT message, WPARAM wParam, LPARAM lParam);
+void PaniViewFrame_PreCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs);
+void PaniViewFrame_PreRegister(LPPANIVIEWFRAME pPaniViewFrame, LPWNDCLASSEX lpwcex);
+void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs);
+void PaniViewFrame_OnSize(LPPANIVIEWFRAME pPaniViewFrame, UINT state, int cx, int cy);
+BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPARAM lParam);
+void PaniViewFrame_OnDestroy(LPPANIVIEWFRAME pPaniViewFrame);
+void PaniViewFrame_OnFileOpenCommand(LPPANIVIEWFRAME pPaniViewFrame);
+void PaniViewFrame_OnViewPrevCommand(LPPANIVIEWFRAME pPaniViewFrame);
+void PaniViewFrame_OnViewNextCommand(LPPANIVIEWFRAME pPaniViewFrame);
+void PaniViewFrame_OnViewFitCommand(LPPANIVIEWFRAME pPaniViewFrame);
 
 /* Direct2D renderer context data structure */
 typedef struct _tagD2DRENDERERCONTEXT {
@@ -216,12 +270,12 @@ typedef struct _tagD2DRENDERERCONTEXT {
 /* Direct2D Renderer context forward declarations */
 HRESULT D2DRendererContext_CreateDeviceResources(LPD2DRENDERERCONTEXT pD2DRendererContext, HWND hWnd);
 void D2DRendererContext_DiscardDeviceResources(LPD2DRENDERERCONTEXT pD2DRendererContext);
-void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERCTLDATA pRenderCtl, HWND hWnd);
+void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERCTL2 pRenderCtl);
 void D2DRendererContext_LoadWICBitmap(LPD2DRENDERERCONTEXT pD2DRendererContext, IWICBitmapSource* pIWICBitmapSource);
 void D2DRendererContext_Release(LPD2DRENDERERCONTEXT pD2DRendererContext);
 void D2DRendererContext_Resize(LPD2DRENDERERCONTEXT pD2DRendererContext, int cx, int cy);
 void InitializeD2DRendererContextStruct(LPD2DRENDERERCONTEXT pD2DRendererContext);
-LPD2DRENDERERCONTEXT CreateD2DRenderer();
+LPD2DRENDERERCONTEXT CreateD2DRenderer(void);
 
 /* OpenGL renderer context data structure */
 typedef struct _tagOPENGLRENDERERCONTEXT {
@@ -243,9 +297,9 @@ typedef struct _tagOPENGLRENDERERCONTEXT {
 
 /* OpenGL Renderer context forward declarations */
 void OpenGLRendererContext_CreateVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext);
-void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTLDATA pWndData);
+void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTL2 pRenderCtl);
 void OpenGLRendererContext_CreateTexture(LPOPENGLRENDERERCONTEXT pGLRendererContext);
-void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTLDATA pWndData, HWND hWnd);
+void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTL2 pRenderCtl);
 void OpenGLRendererContext_DrawVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext);
 GLuint OpenGLRendererContext_LoadShader(LPOPENGLRENDERERCONTEXT lpGLRendererContext, PCWSTR shaderFilePath, GLuint shaderType);
 GLuint OpenGLRendererContext_LoadShaders(LPOPENGLRENDERERCONTEXT pGLRendererContext, PCWSTR vertexFilePath, PCWSTR fragmentFilePath);
@@ -253,7 +307,7 @@ void OpenGLRendererContext_LoadWICBitmap(LPOPENGLRENDERERCONTEXT pGLRendererCont
 void OpenGLRendererContext_Release(LPOPENGLRENDERERCONTEXT pGLRendererContext);
 void OpenGLRendererContext_Resize(LPOPENGLRENDERERCONTEXT pGLRendererContext, int cx, int cy);
 void InitializeOpenGLRendererContextStruct(LPOPENGLRENDERERCONTEXT pGLRendererContext);
-LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer();
+LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer(void);
 
 /* GDI renderer context data structure */
 typedef struct _tagGDIRENDERERCONTEXT {
@@ -265,21 +319,58 @@ typedef struct _tagGDIRENDERERCONTEXT {
 } GDIRENDERERCONTEXT, * LPGDIRENDERERCONTEXT;
 
 /* GDI Renderer context forward declarations */
-void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERCTLDATA pWndData, HWND hWnd);
+void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERCTL2 pRenderCtl);
 void GDIRendererContext_LoadWICBitmap(LPGDIRENDERERCONTEXT pGDIRendererContext, IWICBitmapSource* pBitmapSource);
 void GDIRendererContext_Release(LPGDIRENDERERCONTEXT pGDIRendererContext);
 void GDIRendererContext_Resize(LPGDIRENDERERCONTEXT pGDIRendererContext, int cx, int cy);
 void InitializeGDIRendererContextStruct(LPGDIRENDERERCONTEXT pGDIRendererContext);
-LPGDIRENDERERCONTEXT CreateGDIRenderer();
+LPGDIRENDERERCONTEXT CreateGDIRenderer(void);
 
-HRESULT InvokeFileOpenDialog(LPWSTR*);
+HRESULT InvokeFileOpenDialog(LPWSTR* ppszPath);
 
 int GetFileMIMEType(PCWSTR pszPath);
-BOOL NextFileInDir(LPRENDERCTLDATA, BOOL, LPWSTR);
+BOOL NextFileInDir(PWSTR pszCurrent, BOOL fNext, PWSTR lpPathOut);
 
-INT_PTR CALLBACK AboutDlgProc(HWND, UINT, WPARAM, LPARAM);
-INT_PTR CALLBACK SettingsDlgProc(HWND, UINT, WPARAM, LPARAM);
-INT_PTR CALLBACK EULADlgProc(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK EULADlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+struct _tagPANIVIEWAPP {
+  PANIVIEWFRAME mainFrame;
+  RENDERCTL2 renderCtl;
+
+  SETTINGS m_settings;
+  PWSTR m_appDataSite;
+  PWSTR m_appCfgPath;
+
+  IWICImagingFactory* m_pIWICFactory;
+  IWICFormatConverter* m_pConvertedSourceBitmap;
+
+  LPRENDERERCONTEXT m_rendererContext;
+  PWSTR pszImagePath;
+};
+
+/* Application object methods forward declarations */
+static inline LPPANIVIEWAPP GetApp(void);
+BOOL PaniViewApp_Initialize(LPPANIVIEWAPP pApp);
+PWSTR PaniViewApp_GetAppDataSitePath(LPPANIVIEWAPP pApp);
+PWSTR PaniViewApp_GetSettingsFilePath(LPPANIVIEWAPP pApp);
+BOOL PaniViewApp_CreateAppDataSite(LPPANIVIEWAPP pApp);
+BOOL PaniViewApp_LoadSettings(LPPANIVIEWAPP pApp);
+BOOL PaniViewApp_SaveSettings(LPPANIVIEWAPP pApp);
+BOOL PaniViewApp_LoadDefaultSettings(LPPANIVIEWAPP pApp);
+void PaniViewApp_SetTitle(LPPANIVIEWAPP pApp, PWSTR pszTitle);
+void PaniViewApp_UpdateViewport(void);
+void PaniViewApp_SetFilePath(PWSTR pszPath);
+void PaniViewApp_NextFile(void);
+void PaniViewApp_PrevFile(void);
+void PaniViewApp_ToggleFit(void);
+LPRENDERERCONTEXT PaniViewApp_GetRendererContext(void);
+HRESULT PaniViewApp_InitializeWIC(void);
+HRESULT PaniViewApp_LoadFromFilePGM(PWSTR pszPath, FILE* pf);
+HRESULT PaniViewApp_LoadFromFileWIC(PWSTR pszPath);
+HRESULT PaniViewApp_LoadFromFile(PWSTR pszPath);
+void PaniViewApp_OnCommand(WPARAM wParam, LPARAM lParam);
 
 /*
  * wWinMain
@@ -330,23 +421,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   InitInstance(hInstance); /* Initialize the application's instance — register
                               classes, lock single instance mutexes, etc. */
 
-  HWND hWndMain = CreateWindowEx(0, szPaniViewClassName, szPaniView,
-      WS_OVERLAPPEDWINDOW, /* Top-level window */
-      CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, /* Use default position and size */
-      NULL, /* No parent window */
-      NULL, /* No menu */
-      hInstance,
-      NULL); /* No extra window data */
+  WindowMap_Initialize();
 
-  if (!hWndMain)
-  {
-    dwError = GetLastError();
-    assert(FALSE);
-    PopupError(dwError, NULL);
-    return -1;
-  }
+  PaniViewFrame_Init(&pApp->mainFrame);
+  HWND hWndMain = PaniViewFrame_Create(&pApp->mainFrame);
 
-  pApp->hWndMain = hWndMain;
+  RenderCtl2_Init(&pApp->renderCtl);
+  RenderCtl2_Create(&pApp->renderCtl, hWndMain);
 
   ShowWindow(hWndMain, nCmdShow);
   UpdateWindow(hWndMain); /* Force window contents paint inplace after
@@ -359,21 +440,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     if (nArgs > 0) {
       PathUnquoteSpaces(ppszArgv[0]);
 
-      LPMAINFRAMEDATA pMainWndData = NULL;
-      pMainWndData = (LPMAINFRAMEDATA)GetWindowLongPtr(hWndMain, 0);
-
-      if (pMainWndData) {
-        HWND hRenderer;
-        hRenderer = pMainWndData->hRenderer;
-
-        if (hRenderer && IsWindow(hRenderer)) {
-          LPRENDERCTLDATA pRenderCtlData = NULL;
-          pRenderCtlData = (LPRENDERCTLDATA)GetWindowLongPtr(hRenderer, 0);
-
-          RenderCtl_LoadFromFile(pRenderCtlData, ppszArgv[0]);
-          InvalidateRect(hWndMain, NULL, FALSE);
-        }
-      }
+      PaniViewApp_LoadFromFile(ppszArgv[0]);
     }
   }
 
@@ -406,8 +473,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
  */
 BOOL InitInstance(HINSTANCE hInstance)
 {
-  PaniView_RegisterClass(hInstance);
-  RenderCtl_RegisterClass(hInstance);
+  UNREFERENCED_PARAMETER(hInstance);
+
   return TRUE;
 }
 
@@ -470,13 +537,13 @@ void PopupError(DWORD dwError, HWND hParent)
   free(lpszMessage);
 }
 
-BOOL PopupEULADialog()
+BOOL PopupEULADialog(void)
 {
   HMODULE hMsftEdit = LoadLibrary(L"Msftedit.dll");
   if (!hMsftEdit)
     return FALSE;
 
-  int iStatus = DialogBox(g_hInst, MAKEINTRESOURCE(IDD_EULA), NULL,
+  int iStatus = (int)DialogBox(g_hInst, MAKEINTRESOURCE(IDD_EULA), NULL,
       (DLGPROC)EULADlgProc);
 
   FreeLibrary(hMsftEdit);
@@ -518,7 +585,8 @@ BOOL GetApplicationDataSitePath(PWSTR* ppStr)
   }
 
   size_t lenAppDataSite = wcslen(pszAppDataRoot) + ARRAYSIZE(szDataSiteDir) + 1;
-  PWSTR pszAppDataSite = calloc(1, (lenAppDataSite + 1) * sizeof(WCHAR));
+  PWSTR pszAppDataSite = NULL;
+  pszAppDataSite = calloc(1, (lenAppDataSite + 1) * sizeof(WCHAR));
   if (!pszAppDataSite) {
     assert(FALSE);
     goto fail;
@@ -538,7 +606,10 @@ fail:
     return bStatus;
   }
 
-  free(pszAppDataSite);
+  if (pszAppDataSite) {
+    free(pszAppDataSite);
+  }
+  
   return bStatus;
 }
 
@@ -571,7 +642,28 @@ unsigned long crc32(unsigned char *data, size_t length)
   return checksum;
 }
 
-static inline D2D1_MATRIX_3X2_F D2DUtilMatrixIdentity() {
+int compareHWND(const void* key1, size_t key1Size, const void* key2, size_t key2Size)
+{
+  if (key1Size != sizeof(HWND) || key2Size != sizeof(HWND)) {
+    /* Error: Incorrect key size */
+    return -1;
+  }
+
+  HWND hwndKey1 = *((const HWND*)key1);
+  HWND hwndKey2 = *((const HWND*)key2);
+
+  if (hwndKey1 < hwndKey2) {
+    return -1;
+  }
+  else if (hwndKey1 > hwndKey2) {
+    return 1;
+  }
+  else {
+    return 0;
+  }
+}
+
+static inline D2D1_MATRIX_3X2_F D2DUtilMatrixIdentity(void) {
   D2D1_MATRIX_3X2_F mat = { 0 };
   mat._11 = 1.f;
   mat._22 = 1.f;
@@ -629,8 +721,10 @@ BOOL Settings_LoadFile(SETTINGS *pSettings, PWSTR pszPath)
     return FALSE;
   }
 
-  FILE *pfd = _wfopen(pszPath, L"rb");
-  if (!pfd) {
+  FILE* pfd = NULL;
+  errno_t err;
+  err = _wfopen_s(&pfd, pszPath, L"rb");
+  if (err || !pfd) {
     return FALSE;
   }
 
@@ -668,8 +762,10 @@ BOOL Settings_SaveFile(SETTINGS *pSettings, PWSTR pszPath)
     return FALSE;
   }
 
-  FILE *pfd = _wfopen(pszPath, L"wb");
-  if (!pfd) {
+  FILE* pfd = NULL;
+  errno_t err;
+  err = _wfopen_s(&pfd, pszPath, L"wb");
+  if (err || !pfd) {
     assert(FALSE);
     return FALSE;
   }
@@ -698,7 +794,7 @@ BOOL Settings_LoadDefault(SETTINGS *pSettings)
   return TRUE;
 }
 
-static inline LPPANIVIEWAPP GetApp()
+static inline LPPANIVIEWAPP GetApp(void)
 {
   static LPPANIVIEWAPP s_gApp = NULL;
 
@@ -726,13 +822,16 @@ BOOL PaniViewApp_Initialize(LPPANIVIEWAPP pApp)
       }
 
       PWSTR pszDataPath = PaniViewApp_GetAppDataSitePath(pApp);
-      SHCreateDirectoryEx(pApp->hWndMain, pszDataPath, NULL);
+      SHCreateDirectoryEx(pApp->mainFrame.base.hWnd, pszDataPath, NULL);
       PaniViewApp_SaveSettings(pApp);
     }
     else {
       return FALSE;
     }
   }
+
+  PaniViewApp_InitializeWIC();
+  pApp->m_rendererContext = CreateRendererContext();
 
   return TRUE;
 }
@@ -823,106 +922,553 @@ BOOL PaniViewApp_LoadDefaultSettings(LPPANIVIEWAPP pApp)
   return Settings_LoadDefault(&pApp->m_settings);
 }
 
-BOOL PaniView_RegisterClass(HINSTANCE hInstance)
+void PaniViewApp_SetTitle(LPPANIVIEWAPP pApp, PWSTR pszTitle)
+{
+  if (pApp->mainFrame.base.hWnd)
+  {
+    if (pszTitle && pszTitle[0] != L'\0')
+    {
+      WCHAR szNewTitle[256] = { 0 };
+      StringCchPrintf(szNewTitle, 256, L"%s - %s", pszTitle, szPaniView);
+
+      SetWindowText(pApp->mainFrame.base.hWnd, szNewTitle);
+    }
+    else {
+      SetWindowText(pApp->mainFrame.base.hWnd, szPaniView);
+    }
+  }
+}
+
+void PaniViewApp_UpdateViewport(void)
+{
+  LPPANIVIEWAPP pApp = GetApp();
+
+  InvalidateRect(pApp->renderCtl.base.hWnd, NULL, TRUE);
+}
+
+void PaniViewApp_SetFilePath(PWSTR pszPath)
+{
+  LPPANIVIEWAPP pApp = GetApp();
+
+  size_t len;
+  StringCchLength(pszPath, STRSAFE_MAX_CCH, &len);
+
+  if (pApp->pszImagePath) {
+    LPWSTR pszStrNew = realloc(pApp->pszImagePath, (len + 1) * sizeof(WCHAR));
+    pApp->pszImagePath = pszStrNew;
+  }
+  else {
+    pApp->pszImagePath = malloc((len + 1) * sizeof(WCHAR));
+  }
+
+  StringCchCopy(pApp->pszImagePath, len + 1, pszPath);
+  pApp->pszImagePath[len] = L'\0';
+}
+
+LPRENDERERCONTEXT PaniViewApp_GetRendererContext(void)
+{
+  LPPANIVIEWAPP pApp = GetApp();
+
+  return pApp->m_rendererContext;
+}
+
+HRESULT PaniViewApp_InitializeWIC(void)
+{
+  HRESULT hr = S_OK;
+
+  LPPANIVIEWAPP pApp = GetApp();
+
+  IWICImagingFactory** ppIWICFactory = &pApp->m_pIWICFactory;
+
+  hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (LPVOID)ppIWICFactory);
+  if (FAILED(hr)) {
+    PopupError(hr, NULL);
+    assert(FALSE);
+    return hr;
+  }
+
+  return hr;
+}
+
+HRESULT PaniViewApp_LoadFromFilePGM(PWSTR pszPath, FILE* pf)
+{
+  HRESULT hr = E_FAIL;
+
+  IWICBitmapSource* pConvertedSourceBitmap = NULL;
+
+  int width;
+  int height;
+  int depth;
+  fscanf_s(pf, "%d %d\n%d\n", &width, &height, &depth);
+
+  if (depth != 255) {
+    return E_FAIL;
+  }
+
+  size_t dataLength = (size_t)width * height;
+  unsigned char* data = (unsigned char*)calloc(dataLength, 1);
+  if (!data) {
+    return E_FAIL;
+  }
+
+  fread(data, dataLength, 1, pf);
+
+  pConvertedSourceBitmap = WICLoadFromMemory(width, height, data, &GUID_WICPixelFormat8bppGray);
+  LPRENDERERCONTEXT pRendererContext = PaniViewApp_GetRendererContext();
+  if (pRendererContext) {
+    pRendererContext->LoadWICBitmap(pRendererContext, pConvertedSourceBitmap);
+  }
+
+  /* Copy path to window data */
+  PaniViewApp_SetFilePath(pszPath);
+
+  free(data);
+
+  return hr;
+}
+
+HRESULT PaniViewApp_LoadFromFileWIC(PWSTR pszPath)
+{
+  HRESULT hr = S_OK;
+
+  IWICBitmapSource* pConvertedSourceBitmap = NULL;
+
+  pConvertedSourceBitmap = WICDecodeFromFilename(pszPath);
+
+  LPRENDERERCONTEXT pRendererContext = PaniViewApp_GetRendererContext();
+  if (pRendererContext) {
+    pRendererContext->LoadWICBitmap(pRendererContext, pConvertedSourceBitmap);
+  }
+
+  PaniViewApp_SetFilePath(pszPath);
+  return hr;
+}
+
+HRESULT PaniViewApp_LoadFromFile(PWSTR pszPath)
+{
+  FILE* pf = NULL;
+  errno_t err;
+
+  err = _wfopen_s(&pf, pszPath, L"rb");
+  if (err || !pf)
+  {
+    MessageBox(NULL, L"Cound not open file", NULL, MB_OK | MB_ICONERROR);
+    return E_FAIL;
+  }
+
+  const char pgmMagic[] = { 'P', '5' };
+
+  char magic[2];
+  fread(magic, sizeof(magic), 1, pf);
+
+  HRESULT hResult = E_FAIL;
+  if (!memcmp(magic, pgmMagic, sizeof(magic)))
+  {
+    hResult = PaniViewApp_LoadFromFilePGM(pszPath, pf);
+  }
+  else {
+    hResult = PaniViewApp_LoadFromFileWIC(pszPath);
+  }
+
+  fclose(pf);
+
+  PaniViewApp_SetTitle(GetApp(), pszPath);
+  PaniViewApp_UpdateViewport();
+
+  return hResult;
+}
+
+void PaniViewApp_OnCommand(WPARAM wParam, LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(lParam);
+
+  switch ((int)wParam)
+  {
+  case IDM_FILE_OPEN:
+    PaniViewApp_OnMenuOpen();
+    break;
+
+  case IDM_FILE_EXIT:
+    PaniViewApp_OnMenuExit();
+    break;
+  }
+}
+
+void PaniViewApp_PrevFile(void)
+{
+  HRESULT hr = S_OK;
+
+  LPPANIVIEWAPP pApp = GetApp();
+
+  WCHAR szNextFile[MAX_PATH] = { 0 };
+  NextFileInDir(pApp->pszImagePath, FALSE, szNextFile);
+
+  if (szNextFile[0] != '\0')
+  {
+    hr = PaniViewApp_LoadFromFile(szNextFile);
+    if (FAILED(hr)) {
+      PopupError(hr, NULL);
+      assert(FALSE);
+    }
+  }
+}
+
+void PaniViewApp_NextFile(void)
+{
+  HRESULT hr = S_OK;
+
+  LPPANIVIEWAPP pApp = GetApp();
+
+  WCHAR szNextFile[MAX_PATH] = { 0 };
+  NextFileInDir(pApp->pszImagePath, TRUE, szNextFile);
+
+  if (szNextFile[0] != '\0')
+  {
+    hr = PaniViewApp_LoadFromFile(szNextFile);
+    if (FAILED(hr)) {
+      PopupError(hr, NULL);
+      assert(FALSE);
+    }
+  }
+}
+
+void PaniViewApp_ToggleFit(void)
+{
+  LPPANIVIEWAPP pApp = GetApp();
+
+  pApp->m_settings.bFit = !pApp->m_settings.bFit;
+
+  PaniViewApp_UpdateViewport();
+}
+
+void PaniView_PreRegisterClass(LPWNDCLASSEX lpwcex)
+{
+  lpwcex->style = CS_HREDRAW | CS_VREDRAW;
+  lpwcex->lpszClassName = szPaniViewClassName;
+  lpwcex->lpszMenuName = MAKEINTRESOURCE(IDM_MAIN);
+}
+
+void PaniView_PreCreate(LPCREATESTRUCT lpcs)
+{
+  UNREFERENCED_PARAMETER(lpcs);
+}
+
+LPWINDOW g_currentWindow = NULL;
+
+void WindowMap_Initialize(void)
+{
+  InitializeHashMap(&g_windowMap, sizeof(HWND), compareHWND);
+}
+
+void WindowMap_Add(HWND hWnd, LPWINDOW pWindow)
+{
+  HashMap_Insert(&g_windowMap, &hWnd, &pWindow, sizeof(LPWINDOW));
+}
+
+LPWINDOW WindowMap_Find(HWND hWnd)
+{
+  LPWINDOW *ppWindow = (LPWINDOW*)HashMap_Get(&g_windowMap, &hWnd);
+
+  return ppWindow ? *ppWindow : NULL;
+}
+
+LRESULT CALLBACK StaticWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  LPWINDOW pWindow = WindowMap_Find(hWnd);
+
+  if (!pWindow) {
+    if (g_currentWindow) {
+      pWindow = g_currentWindow;
+      WindowMap_Add(hWnd, pWindow);
+      pWindow->hWnd = hWnd;
+    }
+  }
+
+  if (pWindow) {
+    return pWindow->WndProc(pWindow, message, wParam, lParam);
+  }
+  else {
+    return DefWindowProc(hWnd, message, wParam, lParam);
+  }
+}
+
+void Window_Init(LPWINDOW pWindow)
+{
+  pWindow->WndProc = (LRESULT (*)(LPWINDOW, UINT, WPARAM, LPARAM)) Window_WndProc;
+  pWindow->DefaultWndProc = (LRESULT (*)(LPWINDOW, UINT, WPARAM, LPARAM)) Window_DefaultWindowProc;
+  pWindow->OnCreate = (void (*)(LPWINDOW, LPCREATESTRUCT)) Window_OnCreate;
+  pWindow->OnCommand = (BOOL (*)(LPWINDOW, WPARAM, LPARAM)) Window_OnCommand;
+  pWindow->OnPaint = (void (*)(LPWINDOW)) Window_OnPaint;
+  pWindow->OnDestroy = (void (*)(LPWINDOW)) Window_OnDestroy;
+}
+
+HWND Window_Create(LPWINDOW pWindow, HWND hParent)
+{
+  pWindow->PreRegisterClass(pWindow, &pWindow->wcex);
+
+  if (pWindow->wcex.lpszClassName) {
+    Window_RegisterClass(pWindow);
+    pWindow->cs.lpszClass = pWindow->wcex.lpszClassName;
+  }
+
+  pWindow->PreCreate(pWindow, &pWindow->cs);
+
+  LPCREATESTRUCT lpcs = &pWindow->cs;
+  HWND hWnd = NULL;
+
+  /* Set parent, if set explicitly */
+  if (hParent && IsWindow(hParent)) {
+    lpcs->hwndParent = hParent;
+  }
+
+  g_currentWindow = pWindow;
+  hWnd = CreateWindowEx(0, lpcs->lpszClass, lpcs->lpszName, lpcs->style, lpcs->x, lpcs->y, lpcs->cx, lpcs->cy, lpcs->hwndParent, lpcs->hMenu, GetModuleHandle(NULL), NULL);
+  g_currentWindow = NULL;
+
+  return hWnd;
+}
+
+void Window_RegisterClass(LPWINDOW pWindow)
 {
   WNDCLASSEX wcex = { 0 };
 
-  g_hInst = hInstance;  /* Store application instance globally */
+  if (!GetClassInfoEx(GetModuleHandle(NULL), pWindow->pszClassName, &wcex))
+  {
+    pWindow->wcex.cbSize = sizeof(WNDCLASSEX);
+    pWindow->wcex.hInstance = GetModuleHandle(NULL);
+    pWindow->wcex.lpfnWndProc = StaticWndProc;
 
-  wcex.cbSize = sizeof(wcex);
-  wcex.style = CS_VREDRAW | CS_HREDRAW; /* Redraw window on vertical and
-                                           horizontal sizing */
-  wcex.lpfnWndProc = (WNDPROC) PaniView_WndProc;  /* Window message dispatcher
-                                                     procedure */
-  wcex.cbWndExtra = sizeof(LPMAINFRAMEDATA);
-  wcex.hInstance = hInstance; /* Assign image base instance */
-  wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_ICON));
-  wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
-  wcex.hbrBackground = (HBRUSH) (COLOR_BTNFACE + 1); /* Default gray
-                                                        background */
-  wcex.lpszMenuName = MAKEINTRESOURCE(IDM_MAIN);  /* Load application frame
-                                                     menu*/
-  wcex.lpszClassName = szPaniViewClassName;
-
-  return RegisterClassEx(&wcex);
+    RegisterClassEx(&pWindow->wcex);
+  }
 }
 
-/*
- * PaniView_WndProc
- * Message dispatching procedure callback for main window class
- *
- * An application loop DispatchMessage` call leads here trough a callback from
- * the system, when the particular event been fired.
- */
-LRESULT CALLBACK PaniView_WndProc(HWND hWnd, UINT message,WPARAM wParam,
-    LPARAM lParam)
+LRESULT Window_WndProc(LPWINDOW pWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
-  /*
-   * Please do not write an inline switch code
-   *
-   * Create a superior method instead, like `WindowClass_OnPaint`, etc. and
-   * put it's call here only.
-   * Follow the MFC's message map flow.
-   *
-   * Also you can try a luck using special macros - message crackers from
-   * windowsx.h. They starts with `HANDLE_` and proceeding with window
-   * message macro name, like HANDLE_WM_CREATE. The last parameter is a
-   * function callback, other is a common parameters for this message.
-   * See MSDN for function declaraction on each specific message.
-   *
-   */
-  switch (message)
-  {
-    HANDLE_MSG(hWnd, WM_CREATE, PaniView_OnCreate);
-    HANDLE_MSG(hWnd, WM_COMMAND, PaniView_OnCommand);
-    HANDLE_MSG(hWnd, WM_SIZE, PaniView_OnSize);
-    HANDLE_MSG(hWnd, WM_DESTROY, PaniView_OnDestroy);
+  return pWindow->DefaultWndProc(pWindow, message, wParam, lParam);
+}
+
+LRESULT Window_DefaultWindowProc(LPWINDOW pWindow, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  switch (message) {
+  case WM_CREATE:
+    pWindow->OnCreate(pWindow, (LPCREATESTRUCT)lParam);
+    return 0;
+    break;
+
+  case WM_PAINT:
+    pWindow->OnPaint(pWindow);
+    return 0;
+    break;
+
+  case WM_DESTROY:
+    pWindow->OnDestroy(pWindow);
+    return 0;
+    break;
+
+  case WM_COMMAND:
+    if (pWindow->OnCommand(pWindow, wParam, lParam))
+    {
+      return 0;
+    }
+    break;
   }
 
-  return DefWindowProc(hWnd, message, wParam, lParam);
+  return DefWindowProc(pWindow->hWnd, message, wParam, lParam);
 }
 
-/*
- * PaniView_OnCreate
- * The procedure of creating and initializing child controls, and initializing
- * of window itself by allocating and assigning a custom data structure
- * pointer to internal window data filed. So we can grab custom window data
- * structure each time by it's handle.
- */
-BOOL PaniView_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
+/* Default OnCreate stub */
+void Window_OnCreate(LPWINDOW pWindow, LPCREATESTRUCT lpcs)
 {
+  UNREFERENCED_PARAMETER(pWindow);
   UNREFERENCED_PARAMETER(lpcs);
+}
 
-  LPMAINFRAMEDATA wndData = (LPMAINFRAMEDATA) calloc(1, sizeof(MAINFRAMEDATA));
-  assert(wndData);
-  SetWindowLongPtr(hWnd, 0, (LONG_PTR)wndData);
+/* Default OnCommand stub */
+BOOL Window_OnCommand(LPWINDOW pWindow, WPARAM wParam, LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(pWindow);
+  UNREFERENCED_PARAMETER(wParam);
+  UNREFERENCED_PARAMETER(lParam);
+  return FALSE;
+}
+
+/* Default OnPaint stub */
+void Window_OnPaint(LPWINDOW pWindow)
+{
+  PAINTSTRUCT ps;
+  HDC hdc;
+  hdc = BeginPaint(pWindow->hWnd, &ps);
+
+  EndPaint(pWindow->hWnd, &ps);
+}
+
+/* Default OnDestroy stub */
+void Window_OnDestroy(LPWINDOW pWindow)
+{
+  UNREFERENCED_PARAMETER(pWindow);
+}
+
+void RenderCtl2_Init(LPRENDERCTL2 pRenderCtl)
+{
+  Window_Init((LPWINDOW)pRenderCtl);
+
+  pRenderCtl->base.PreCreate = (void (*)(LPWINDOW, LPCREATESTRUCT))RenderCtl2_PreCreate;
+  pRenderCtl->base.PreRegisterClass = (void (*)(LPWINDOW, LPWNDCLASSEX))RenderCtl2_PreRegister;
+  pRenderCtl->base.WndProc = (LRESULT (*)(LPWINDOW, UINT, WPARAM, LPARAM))RenderCtl2_WndProc;
+
+  pRenderCtl->base.OnCreate = (void (*)(LPWINDOW, LPCREATESTRUCT)) RenderCtl2_OnCreate;
+  pRenderCtl->base.OnCommand = (BOOL (*)(LPWINDOW, WPARAM, LPARAM)) RenderCtl2_OnCommand;
+  pRenderCtl->base.OnPaint = (void (*)(LPWINDOW)) RenderCtl2_OnPaint;
+  pRenderCtl->base.OnDestroy = (void (*)(LPWINDOW)) RenderCtl2_OnDestroy;
+}
+
+HWND RenderCtl2_Create(LPRENDERCTL2 pRenderCtl, HWND hParent)
+{
+  return Window_Create((LPWINDOW)pRenderCtl, hParent);
+}
+
+LRESULT RenderCtl2_WndProc(LPRENDERCTL2 pRenderCtl, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  switch (message)
+  {
+  case WM_SIZE:
+    RenderCtl2_OnSize(pRenderCtl, (UINT)wParam, LOWORD(lParam), HIWORD(lParam));
+    return 0;
+    break;
+  }
+
+  return pRenderCtl->base.DefaultWndProc((LPWINDOW)pRenderCtl, message, wParam, lParam);
+}
+
+void RenderCtl2_PreCreate(LPRENDERCTL2 pRenderCtl, LPCREATESTRUCT lpcs)
+{
+  UNREFERENCED_PARAMETER(pRenderCtl);
+
+  lpcs->x = 10;
+  lpcs->y = 10;
+  lpcs->cx = 100;
+  lpcs->cy = 100;
+  lpcs->style = WS_CHILD | WS_VISIBLE;
+}
+
+void RenderCtl2_PreRegister(LPRENDERCTL2 pRenderCtl, LPWNDCLASSEX lpwcex)
+{
+  UNREFERENCED_PARAMETER(pRenderCtl);
+
+  lpwcex->style = CS_VREDRAW | CS_HREDRAW;
+  lpwcex->hCursor = LoadCursor(NULL, IDC_ARROW);
+  /* I think there is no need to specify GDI background brush since all screen
+   * is drawn by D2D */
+  lpwcex->lpszClassName = szRenderCtlClassName;
+}
+
+void RenderCtl2_OnCreate(LPRENDERCTL2 pRenderCtl, LPCREATESTRUCT lpcs)
+{
+  UNREFERENCED_PARAMETER(pRenderCtl);
+  UNREFERENCED_PARAMETER(lpcs);
+}
+
+void RenderCtl2_OnSize(LPRENDERCTL2 pRenderCtl, UINT state, int cx, int cy)
+{
+  UNREFERENCED_PARAMETER(pRenderCtl);
+  UNREFERENCED_PARAMETER(state);
+  UNREFERENCED_PARAMETER(cx);
+  UNREFERENCED_PARAMETER(cy);
+
+  LPRENDERERCONTEXT pRendererContext = PaniViewApp_GetRendererContext();
+  if (pRendererContext) {
+    pRendererContext->Resize(pRendererContext, cx, cy);
+  }
+}
+
+void RenderCtl2_OnPaint(LPRENDERCTL2 pRenderCtl)
+{
+  LPRENDERERCONTEXT pRendererContext = PaniViewApp_GetRendererContext();
+  if (pRendererContext)
+  {
+    pRendererContext->Draw(pRendererContext, pRenderCtl);
+
+    ValidateRect(pRenderCtl->base.hWnd, NULL);
+  }
+  else {
+    PAINTSTRUCT ps = { 0 };
+    HDC hdc;
+
+    hdc = BeginPaint(pRenderCtl->base.hWnd, &ps);
+
+    RECT rcClient;
+    GetClientRect(pRenderCtl->base.hWnd, &rcClient);
+
+    HBRUSH hBrush = CreateSolidBrush(RGB(255, 0, 0));
+    FillRect(hdc, &rcClient, hBrush);
+
+    EndPaint(pRenderCtl->base.hWnd, &ps);
+  }
+}
+
+BOOL RenderCtl2_OnCommand(LPRENDERCTL2 pRenderCtl, WPARAM wParam, LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(pRenderCtl);
+  UNREFERENCED_PARAMETER(wParam);
+  UNREFERENCED_PARAMETER(lParam);
+
+  return FALSE;
+}
+
+void RenderCtl2_OnDestroy(LPRENDERCTL2 pRenderCtl)
+{
+  UNREFERENCED_PARAMETER(pRenderCtl);
+}
+
+void PaniViewFrame_Init(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  ZeroMemory(pPaniViewFrame, sizeof(PANIVIEWFRAME));
+
+  Window_Init((LPWINDOW)pPaniViewFrame);
+
+  pPaniViewFrame->base.PreCreate = (void (*)(LPWINDOW, LPCREATESTRUCT)) PaniViewFrame_PreCreate;
+  pPaniViewFrame->base.PreRegisterClass = (void (*)(LPWINDOW, LPWNDCLASSEX)) PaniViewFrame_PreRegister;
+  pPaniViewFrame->base.WndProc = (LRESULT (*)(LPWINDOW, UINT, WPARAM, LPARAM)) PaniViewFrame_WndProc;
+
+  pPaniViewFrame->base.OnCreate = (void (*)(LPWINDOW, LPCREATESTRUCT)) PaniViewFrame_OnCreate;
+  pPaniViewFrame->base.OnCommand = (BOOL (*)(LPWINDOW, WPARAM, LPARAM)) PaniViewFrame_OnCommand;
+  pPaniViewFrame->base.OnDestroy = (void (*)(LPWINDOW)) PaniViewFrame_OnDestroy;
+}
+
+HWND PaniViewFrame_Create(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  HWND hWnd = Window_Create((LPWINDOW)pPaniViewFrame, NULL);
+
+  if (!hWnd) {
+    return NULL;
+  }
 
   /* Create paging toolbar control */
   HWND hWndToolbar = CreateWindowEx(0, TOOLBARCLASSNAME,
-      NULL, /* No text, name or title */
-      WS_CHILD | TBSTYLE_WRAPABLE | TBSTYLE_FLAT | TBSTYLE_LIST |
-          TBSTYLE_TOOLTIPS | CCS_NODIVIDER | CCS_NORESIZE,
-      0, 0, 0, 0, /* Will be sized on first WM_SIZE */
-      hWnd,
-      NULL, /* No menu nor control id */
-      g_hInst,
-      NULL); /* No custom window data */
+    NULL, /* No text, name or title */
+    WS_CHILD | TBSTYLE_WRAPABLE | TBSTYLE_FLAT | TBSTYLE_LIST |
+    TBSTYLE_TOOLTIPS | CCS_NODIVIDER | CCS_NORESIZE,
+    0, 0, 0, 0, /* Will be sized on first WM_SIZE */
+    pPaniViewFrame->base.hWnd,
+    NULL, /* No menu nor control id */
+    GetModuleHandle(NULL),
+    NULL); /* No custom window data */
   if (!hWndToolbar) {
     assert(FALSE);
     return FALSE;
   }
 
   SendMessage(hWndToolbar, TB_SETEXTENDEDSTYLE, 0,
-      (LPARAM)TBSTYLE_EX_MIXEDBUTTONS);
+    (LPARAM)TBSTYLE_EX_MIXEDBUTTONS);
 
   HIMAGELIST hImageList = ImageList_LoadImage(
-      g_hInst,
-      MAKEINTRESOURCE(IDB_TOOLBARSTRIP24),
-      24, /* Width */
-      0,  /* Do not reserve space for growth */
-      CLR_DEFAULT, /* No transparency mask */
-      IMAGE_BITMAP, /* Type of image to load */
-      LR_CREATEDIBSECTION | LR_DEFAULTCOLOR);
+    GetModuleHandle(NULL),
+    MAKEINTRESOURCE(IDB_TOOLBARSTRIP24),
+    24, /* Width */
+    0,  /* Do not reserve space for growth */
+    CLR_DEFAULT, /* No transparency mask */
+    IMAGE_BITMAP, /* Type of image to load */
+    LR_CREATEDIBSECTION | LR_DEFAULTCOLOR);
   assert(hImageList);
 
   /*
@@ -934,23 +1480,23 @@ BOOL PaniView_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
    *  TODO: Need check
    *  */
   SendMessage(hWndToolbar, TB_SETIMAGELIST,
-      (WPARAM) 0,  /* Image list id */
-      (LPARAM) hImageList);
+    (WPARAM)0,  /* Image list id */
+    (LPARAM)hImageList);
 
   /* Initialize button info */
   TBBUTTON tbButtons[] = {
     { 0, IDM_PREV, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
-        (INT_PTR) L"Previous" },
+        (INT_PTR)L"Previous" },
     { 1, IDM_NEXT, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
-        (INT_PTR) L"Next" },
+        (INT_PTR)L"Next" },
     { 2, IDM_ZOOMOUT, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
-        (INT_PTR) L"Zoom Out" },
+        (INT_PTR)L"Zoom Out" },
     { 3, IDM_ZOOMIN, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
-        (INT_PTR) L"Zoom In" },
+        (INT_PTR)L"Zoom In" },
     { 4, IDM_ACTUALSIZE, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
-        (INT_PTR) L"Actual Size" },
+        (INT_PTR)L"Actual Size" },
     { 5, IDM_FITSIZE, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
-        (INT_PTR) L"Fit" },
+        (INT_PTR)L"Fit" },
     { 6, 0, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
         (INT_PTR)L"Rotate" },
     { 7, 0, TBSTATE_ENABLED, BTNS_AUTOSIZE, {0}, 0,
@@ -965,171 +1511,165 @@ BOOL PaniView_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
   SendMessage(hWndToolbar, TB_AUTOSIZE, 0, 0);
   ShowWindow(hWndToolbar, TRUE);
 
-  HWND hWndRenderer = CreateWindowEx(0, szRenderCtlClassName, NULL,
-      WS_CHILD | WS_VISIBLE,
-      10, 10, 320, 240,
-      hWnd, NULL, g_hInst, NULL);
-  assert(hWndRenderer);
+  pPaniViewFrame->hToolbar = hWndToolbar;
 
-  wndData->hRenderer = hWndRenderer;
-  wndData->hToolbar = hWndToolbar;
-
-  return TRUE;
+  return hWnd;
 }
 
-/*
- *  PaniView_OnSize
- *
- *  Fired on window being resized. Updates all child content.
- *  The render area will fill whore client rect, except toolbar
- *  on the bottom. So there did some calculations how to arrange
- *  the toolbar on bottom center and how render control will fit.
- */
-void PaniView_OnSize(HWND hWnd, UINT state, int cx, int cy)
-{
-  UNREFERENCED_PARAMETER(state);  /* Do not handle maximized/minimized state */
-
-  LPMAINFRAMEDATA wndData = (LPMAINFRAMEDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  SIZE tbSize;
-  SendMessage(wndData->hToolbar, TB_GETMAXSIZE, 0, (LPARAM)&tbSize);
-
-  SetWindowPos(wndData->hToolbar, NULL,
-      (cx - tbSize.cx) / 2, /* Center horizontally */
-      cy - (tbSize.cy), /* Snap to bottom */
-      tbSize.cx, /* Apply maximum toolbar size */
-      tbSize.cy,
-      SWP_NOZORDER);
-
-  SetWindowPos(wndData->hRenderer, NULL,
-      0, 0,
-      cx,
-      cy - (tbSize.cy),  /* Subtract the toolbar's heigth */
-      SWP_NOZORDER);
-}
-
-void PaniView_OnCommand(HWND hWnd, int id, HWND hwndCtl, UINT codeNotify)
-{
-  UNREFERENCED_PARAMETER(hwndCtl);
-  UNREFERENCED_PARAMETER(codeNotify);
-
-  LPMAINFRAMEDATA wndData = (LPMAINFRAMEDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  switch (id) {
-
-    case IDM_FILE_OPEN:
-      {
-      SendMessage(wndData->hRenderer, WM_SENDNUDES, 0, 0);
-      InvalidateRect(hWnd, NULL, FALSE);
-      }
-      break;
-
-    case IDM_PREV:
-      SendMessage(wndData->hRenderer, WM_FILEPREV, 0, 0);
-      InvalidateRect(hWnd, NULL, FALSE);
-      break;
-
-    case IDM_NEXT:
-      SendMessage(wndData->hRenderer, WM_FILENEXT, 0, 0);
-      InvalidateRect(hWnd, NULL, FALSE);
-      break;
-
-    case IDM_FITSIZE:
-      SendMessage(wndData->hRenderer, WM_FIT, 0, 0);
-      InvalidateRect(hWnd, NULL, FALSE);
-      break;
-
-    case IDM_SETTINGS:
-      DialogBox(g_hInst, MAKEINTRESOURCE(IDD_SETTINGS),
-          hWnd, (DLGPROC)SettingsDlgProc);
-      break;
-
-    case IDM_ABOUT:
-      DialogBox(g_hInst, MAKEINTRESOURCE(IDD_ABOUT),
-          hWnd, (DLGPROC)AboutDlgProc);
-      break;
-
-    case IDM_FILE_EXIT:
-      PostQuitMessage(0);
-      break;
-  }
-}
-
-/*
- *  PaniView_OnPaint
- */
-void PaniView_OnPaint(HWND hWnd)
-{
-  UNREFERENCED_PARAMETER(hWnd);
-}
-
-/*
- *  PaniView_OnDestroy
- *  Process the application frame shuthown. Usually it means that user exit
- *  the application, so this call should call proper application termination. 
- */
-void PaniView_OnDestroy(HWND hWnd)
-{
-  UNREFERENCED_PARAMETER(hWnd);
-
-  /* TODO: Save data */
-  PostQuitMessage(0);
-}
-
-/*
- *  RenderCtl_RegisterClass
- *  Register the renderer control window class
- */
-BOOL RenderCtl_RegisterClass(HINSTANCE hInstance)
-{
-  WNDCLASSEX wcex = { 0 };
-
-  wcex.cbSize = sizeof(wcex);
-  wcex.style = CS_VREDRAW | CS_HREDRAW;
-  wcex.lpfnWndProc = (WNDPROC) RenderCtl_WndProc;
-  wcex.cbWndExtra = sizeof(LPRENDERCTLDATA);
-  wcex.hInstance = hInstance;
-  wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
-  /* I think there is no need to specify GDI background brush since all screen
-   * is drawn by D2D */
-  wcex.lpszClassName = szRenderCtlClassName;
-
-  return RegisterClassEx(&wcex);
-}
-
-LRESULT CALLBACK RenderCtl_WndProc(HWND hWnd, UINT message, WPARAM wParam,
-    LPARAM lParam)
+LRESULT PaniViewFrame_WndProc(LPPANIVIEWFRAME pPaniViewFrame, UINT message, WPARAM wParam, LPARAM lParam)
 {
   switch (message)
   {
-    HANDLE_MSG(hWnd, WM_CREATE, RenderCtl_OnCreate);
-    HANDLE_MSG(hWnd, WM_SIZE, RenderCtl_OnSize);
-    HANDLE_MSG(hWnd, WM_PAINT, RenderCtl_OnPaint);
-    HANDLE_MSG(hWnd, WM_DESTROY, RenderCtl_OnDestroy);
-
-    case WM_SENDNUDES:
-      RenderCtl_OnSendNudes(hWnd);
-      return 0;
-
-    case WM_FILEPREV:
-      RenderCtl_OnFilePrev(hWnd);
-      return 0;
-
-    case WM_FILENEXT:
-      RenderCtl_OnFileNext(hWnd);
-      return 0;
-
-    case WM_FIT:
-      RenderCtl_OnFitCmd(hWnd);
-      return 0;
+  case WM_SIZE:
+    PaniViewFrame_OnSize(pPaniViewFrame, (UINT)wParam, (int)(LOWORD(lParam)), (int)(HIWORD(lParam)));
+    return 0;
+    break;
   }
 
-  return DefWindowProc(hWnd, message, wParam, lParam);
+  return pPaniViewFrame->base.DefaultWndProc((LPWINDOW)pPaniViewFrame, message, wParam, lParam);
 }
 
-size_t pwGetFileSize(FILE* fp)
+void PaniViewFrame_PreCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  lpcs->style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+  lpcs->cx = CW_USEDEFAULT;
+  lpcs->cy = CW_USEDEFAULT;
+  lpcs->lpszName = szPaniView;
+}
+
+void PaniViewFrame_PreRegister(LPPANIVIEWFRAME pPaniViewFrame, LPWNDCLASSEX lpwcex)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  lpwcex->style = CS_HREDRAW | CS_VREDRAW;
+  lpwcex->hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_ICON));
+  lpwcex->hCursor = LoadCursor(NULL, IDC_ARROW);
+  lpwcex->hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+  lpwcex->lpszClassName = szPaniViewClassName;
+  lpwcex->lpszMenuName = MAKEINTRESOURCE(IDM_MAIN);
+}
+
+void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+  UNREFERENCED_PARAMETER(lpcs);
+}
+
+void PaniViewFrame_OnSize(LPPANIVIEWFRAME pPaniViewFrame, UINT state, int cx, int cy)
+{
+  UNREFERENCED_PARAMETER(state);
+
+  SIZE tbSize;
+  SendMessage(pPaniViewFrame->hToolbar, TB_GETMAXSIZE, 0, (LPARAM)&tbSize);
+
+  SetWindowPos(pPaniViewFrame->hToolbar, NULL,
+    (cx - tbSize.cx) / 2, /* Center horizontally */
+    cy - (tbSize.cy), /* Snap to bottom */
+    tbSize.cx, /* Apply maximum toolbar size */
+    tbSize.cy,
+    SWP_NOZORDER);
+
+  LPPANIVIEWAPP pApp = GetApp();
+  SetWindowPos(pApp->renderCtl.base.hWnd, NULL,
+    0, 0,
+    cx,
+    cy - (tbSize.cy),  /* Subtract the toolbar's heigth */
+    SWP_NOZORDER);
+}
+
+BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPARAM lParam)
+{
+  UNREFERENCED_PARAMETER(lParam);
+
+  int id = LOWORD(wParam);
+
+  switch (id) {
+  case IDM_FILE_OPEN:
+    PaniViewFrame_OnFileOpenCommand(pPaniViewFrame);
+    break;
+
+  case IDM_PREV:
+    PaniViewFrame_OnViewPrevCommand(pPaniViewFrame);
+    break;
+
+  case IDM_NEXT:
+    PaniViewFrame_OnViewNextCommand(pPaniViewFrame);
+    break;
+
+  case IDM_FITSIZE:
+    PaniViewFrame_OnViewFitCommand(pPaniViewFrame);
+    break;
+
+  case IDM_SETTINGS:
+    DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_SETTINGS),
+      pPaniViewFrame->base.hWnd, (DLGPROC)SettingsDlgProc);
+    break;
+    
+
+  case IDM_ABOUT:
+    DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_ABOUT),
+      pPaniViewFrame->base.hWnd, (DLGPROC)AboutDlgProc);
+    break;
+
+  case IDM_FILE_EXIT:
+    PostQuitMessage(0);
+    break;
+  }
+
+  return FALSE;
+}
+
+void PaniViewFrame_OnDestroy(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  PostQuitMessage(0);
+}
+
+void PaniViewFrame_OnFileOpenCommand(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  HRESULT hr = S_OK;
+
+  LPWSTR szFilePath;
+  hr = InvokeFileOpenDialog(&szFilePath);
+
+  if (SUCCEEDED(hr))
+  {
+    hr = PaniViewApp_LoadFromFile(szFilePath);
+
+    if (FAILED(hr)) {
+      PopupError(hr, NULL);
+      assert(FALSE);
+    }
+  }
+}
+
+void PaniViewFrame_OnViewPrevCommand(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  PaniViewApp_PrevFile();
+}
+
+void PaniViewFrame_OnViewNextCommand(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  PaniViewApp_NextFile();
+}
+
+void PaniViewFrame_OnViewFitCommand(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  PaniViewApp_ToggleFit();
+}
+
+size_t GetPfFileSize(FILE* fp)
 {
   size_t size = 0;
 
@@ -1142,7 +1682,9 @@ size_t pwGetFileSize(FILE* fp)
 
 void OrthoMatrix(GLfloat mat[4][4], GLfloat width, GLfloat height)
 {
-  memset(&mat[0][0], 0, sizeof(mat));
+  /*
+  memset(&mat[0][0], 0, sizeof(*mat) * 4 * 4);
+  */
 
   mat[0][0] = 2.0f / -width;
   mat[1][1] = 2.0f / -height;
@@ -1177,7 +1719,7 @@ BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop)
   {
     float factor = (float)abs(rcDest.left) / (float)(abs(rcDest.left) + rcDest.right);
 
-    rcSrc.left = rcSrc.right * factor;
+    rcSrc.left = (LONG)(rcSrc.right * factor);
     rcSrc.right -= rcSrc.left;
     rcDest.left = 0;
 
@@ -1187,7 +1729,7 @@ BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop)
   {
     float factor = (float)abs(rcDest.top) / (float)(abs(rcDest.top) + rcDest.bottom);
 
-    rcSrc.top = rcSrc.bottom * factor;
+    rcSrc.top = (LONG)(rcSrc.bottom * factor);
     rcSrc.bottom -= rcSrc.top;
     rcDest.top = 0;
   }
@@ -1204,10 +1746,10 @@ BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop)
 
 void RectMatrixMultiply(LPRECT prc, float mat[4][4])
 {
-  prc->left *= mat[0][0];
-  prc->right *= mat[0][0];
-  prc->top *= mat[1][1];
-  prc->bottom *= mat[1][1];
+  prc->left *= (LONG)mat[0][0];
+  prc->right *= (LONG)mat[0][0];
+  prc->top *= (LONG)mat[1][1];
+  prc->bottom *= (LONG)mat[1][1];
 }
 
 void RectTranslate(LPRECT prc, float x, float y)
@@ -1271,15 +1813,17 @@ void D2DRendererContext_DiscardDeviceResources(LPD2DRENDERERCONTEXT pD2DRenderer
   SAFE_RELEASE(pD2DRendererContext->m_pRenderTarget);
 }
 
-void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERCTLDATA pRenderCtl, HWND hWnd)
+void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERCTL2 pRenderCtl)
 {
+  LPPANIVIEWAPP pApp = GetApp();
+
   ID2D1HwndRenderTarget** ppRenderTarget = &pD2DRendererContext->m_pRenderTarget;
-  IWICFormatConverter** ppConvertedSourceBitmap = &pRenderCtl->m_pConvertedSourceBitmap;
+  IWICFormatConverter** ppConvertedSourceBitmap = &pApp->m_pConvertedSourceBitmap;
   ID2D1Bitmap** ppD2DBitmap = &pD2DRendererContext->m_pD2DBitmap;
 
   HRESULT hr = S_OK;
 
-  hr = D2DRendererContext_CreateDeviceResources(pD2DRendererContext, hWnd);
+  hr = D2DRendererContext_CreateDeviceResources(pD2DRendererContext, pRenderCtl->base.hWnd);
   if (SUCCEEDED(hr)) {
 
     dxID2D1RenderTarget_BeginDraw((ID2D1RenderTarget*)*ppRenderTarget);
@@ -1313,12 +1857,11 @@ void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERC
     {
       D2D1_MATRIX_3X2_F matAnchor;
       D2D1_MATRIX_3X2_F matPosition;
-      D2D1_MATRIX_3X2_F mat;
+      D2D1_MATRIX_3X2_F matView;
 
       D2D1_SIZE_F bmpSize;
       bmpSize = dxID2D1Bitmap_GetSize(*ppD2DBitmap);
 
-      LPPANIVIEWAPP pApp = GetApp();
       if (pApp->m_settings.bFit) {
         if (bmpSize.width > rtSize.width) {
           float ratio = bmpSize.height / bmpSize.width;
@@ -1343,9 +1886,9 @@ void D2DRendererContext_Draw(LPD2DRENDERERCONTEXT pD2DRendererContext, LPRENDERC
           roundf(rtSize.height / 2.0f)
       });
 
-      mat = D2DUtilMatrixMultiply(&matAnchor, &matPosition);
+      matView = D2DUtilMatrixMultiply(&matAnchor, &matPosition);
 
-      dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget*)*ppRenderTarget, &mat);
+      dxID2D1RenderTarget_SetTransform((ID2D1RenderTarget*)*ppRenderTarget, &matView);
 
       D2D1_RECT_F imgRect = {
         0.0f, 0.0f,
@@ -1397,7 +1940,7 @@ void D2DRendererContext_LoadWICBitmap(LPD2DRENDERERCONTEXT pD2DRendererContext, 
 fail:
   // SAFE_RELEASE(pD2DDirtyBitmap);
 
-  return hr;
+  return;
 }
 
 void D2DRendererContext_Release(LPD2DRENDERERCONTEXT pD2DRendererContext)
@@ -1424,11 +1967,11 @@ void InitializeD2DRendererContextStruct(LPD2DRENDERERCONTEXT pD2DRendererContext
 {
   pD2DRendererContext->base.Release = (void (*)(LPRENDERERCONTEXT))& D2DRendererContext_Release;
   pD2DRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int))& D2DRendererContext_Resize;
-  pD2DRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTLDATA, HWND))& D2DRendererContext_Draw;
+  pD2DRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTL2))& D2DRendererContext_Draw;
   pD2DRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*))& D2DRendererContext_LoadWICBitmap;
 }
 
-LPD2DRENDERERCONTEXT CreateD2DRenderer()
+LPD2DRENDERERCONTEXT CreateD2DRenderer(void)
 {
   LPD2DRENDERERCONTEXT pD2DRendererContext = NULL;
   ID2D1Factory** ppD2DFactory = NULL;
@@ -1489,7 +2032,7 @@ void OpenGLRendererContext_CreateVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext)
   glBufferData(GL_ARRAY_BUFFER, sizeof(g_uvBufferData), g_uvBufferData, GL_STATIC_DRAW);
 }
 
-void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTLDATA pWndData)
+void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTL2 pRenderCtl)
 {
   if (!pGLRendererContext->m_hGLContext)
   {
@@ -1503,7 +2046,7 @@ void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRend
     pfd.cDepthBits = 32;
     pfd.iLayerType = PFD_MAIN_PLANE;
 
-    HDC hDC = GetDC(pWndData->m_hWnd);
+    HDC hDC = GetDC(pRenderCtl->base.hWnd);
 
     int pixFmtId = ChoosePixelFormat(hDC, &pfd);
     if (!pixFmtId) {
@@ -1594,9 +2137,9 @@ void OpenGLRendererContext_CreateTexture(LPOPENGLRENDERERCONTEXT pGLRendererCont
   }
 }
 
-void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTLDATA pWndData, HWND hWnd)
+void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRENDERCTL2 pRenderCtl)
 {
-  OpenGLRendererContext_CreateDeviceResources(pGLRendererContext, pWndData);
+  OpenGLRendererContext_CreateDeviceResources(pGLRendererContext, pRenderCtl);
 
   /* Clear */
   glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
@@ -1612,9 +2155,9 @@ void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRE
   OpenGLRendererContext_DrawVBO(pGLRendererContext);
 
   /* Swap buffers */
-  HDC hdc = GetDC(hWnd);
+  HDC hdc = GetDC(pRenderCtl->base.hWnd);
   SwapBuffers(hdc);
-  ReleaseDC(hWnd, hdc);
+  ReleaseDC(pRenderCtl->base.hWnd, hdc);
 }
 
 void OpenGLRendererContext_DrawVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext)
@@ -1678,16 +2221,24 @@ void OpenGLRendererContext_DrawVBO(LPOPENGLRENDERERCONTEXT pGLRendererContext)
 
 GLuint OpenGLRendererContext_LoadShader(LPOPENGLRENDERERCONTEXT lpGLRendererContext, PCWSTR shaderFilePath, GLuint shaderType)
 {
+  UNREFERENCED_PARAMETER(lpGLRendererContext);
+
   GLuint shaderId = glCreateShader(shaderType);
 
   FILE* pShaderFile = NULL;
-  pShaderFile = _wfopen(shaderFilePath, L"r");
+  errno_t err;
+  err = _wfopen_s(&pShaderFile, shaderFilePath, L"r");
 
-  if (pShaderFile)
+  if (!err && pShaderFile)
   {
-    size_t fileSize = pwGetFileSize(pShaderFile);
+    size_t fileSize = GetPfFileSize(pShaderFile);
 
     char* pShaderCode = (char*)calloc(1, fileSize);
+    if (!pShaderCode) {
+      fclose(pShaderFile);
+      return 0;
+    }
+
     fread(pShaderCode, 1, fileSize, pShaderFile);
     pShaderCode[fileSize] = '\0';
 
@@ -1720,7 +2271,7 @@ GLuint OpenGLRendererContext_LoadShader(LPOPENGLRENDERERCONTEXT lpGLRendererCont
     // free(pShaderCode);
   }
   else {
-    fprintf(stderr, "Impossible to open %s. Are you in the right directory? Don't forget to read the FAQ!", shaderFilePath);
+    fwprintf(stderr, L"Impossible to open %s. Are you in the right directory?", shaderFilePath);
     exit(EXIT_FAILURE);
   }
 
@@ -1794,7 +2345,9 @@ void OpenGLRendererContext_LoadWICBitmap(LPOPENGLRENDERERCONTEXT pGLRendererCont
 
 void OpenGLRendererContext_Release(LPOPENGLRENDERERCONTEXT pGLRendererContext)
 {
+  UNREFERENCED_PARAMETER(pGLRendererContext);
 
+  /* TODO */
 }
 
 void OpenGLRendererContext_Resize(LPOPENGLRENDERERCONTEXT pGLRendererContext, int cx, int cy)
@@ -1808,11 +2361,11 @@ void InitializeOpenGLRendererContextStruct(LPOPENGLRENDERERCONTEXT pGLRendererCo
 {
   pGLRendererContext->base.Release = (void (*)(LPRENDERERCONTEXT)) & OpenGLRendererContext_Release;
   pGLRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int)) & OpenGLRendererContext_Resize;
-  pGLRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTLDATA, HWND)) & OpenGLRendererContext_Draw;
+  pGLRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTL2)) & OpenGLRendererContext_Draw;
   pGLRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*)) & OpenGLRendererContext_LoadWICBitmap;
 }
 
-LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer()
+LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer(void)
 {
   LPOPENGLRENDERERCONTEXT pGLRendererContext = NULL;
 
@@ -1830,24 +2383,22 @@ LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer()
  *  GDI Renderer functions  *
  ****************************/
 
-void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERCTLDATA pWndData, HWND hWnd)
+void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERCTL2 pRenderCtl)
 {
   HDC hdc;
-  hdc = GetDC(hWnd);
+  hdc = GetDC(pRenderCtl->base.hWnd);
 
   HDC hBitmapDC = CreateCompatibleDC(hdc);
   HBITMAP hOldBitmap = (HBITMAP) SelectObject(hBitmapDC, (HGDIOBJ) pGDIRendererContext->m_hBitmap);
 
   RECT rc = {0};
-  GetClientRect(hWnd, &rc);
+  GetClientRect(pRenderCtl->base.hWnd, &rc);
 
   FillRect(hdc, &rc, CreateSolidBrush(RGB(0, 0xFF, 0)));
 
   int imageWidth = pGDIRendererContext->m_width;
   int imageHeight = pGDIRendererContext->m_height;
 
-  int viewX = 0;
-  int viewY = 0;
   int viewWidth = Rect_GetWidth(&rc);
   int viewHeight = Rect_GetHeight(&rc);
 
@@ -1868,13 +2419,13 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
   if (imageWidth > viewWidth) {
     float ratio = imageHeight / (float)imageWidth;
     imageWidth = viewWidth;
-    imageHeight = viewWidth * ratio;
+    imageHeight = (int)(viewWidth * ratio);
   }
 
   if (imageHeight > viewHeight)
   {
     float ratio = imageWidth / (float)imageHeight;
-    imageWidth = viewHeight * ratio;
+    imageWidth = (int)(viewHeight * ratio);
     imageHeight = viewHeight;
   }
 
@@ -1904,7 +2455,7 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
 
   SelectObject(hBitmapDC, (HGDIOBJ) hOldBitmap);
 
-  ReleaseDC(hWnd, hdc);
+  ReleaseDC(pRenderCtl->base.hWnd, hdc);
 }
 
 void GDIRendererContext_LoadWICBitmap(LPGDIRENDERERCONTEXT pGDIRendererContext, IWICBitmapSource* pBitmapSource)
@@ -1933,18 +2484,20 @@ void GDIRendererContext_Release(LPGDIRENDERERCONTEXT pGDIRendererContext)
 
 void GDIRendererContext_Resize(LPGDIRENDERERCONTEXT pGDIRendererContext, int cx, int cy)
 {
-
+  UNREFERENCED_PARAMETER(pGDIRendererContext);
+  UNREFERENCED_PARAMETER(cx);
+  UNREFERENCED_PARAMETER(cy);
 }
 
 void InitializeGDIRendererContextStruct(LPGDIRENDERERCONTEXT pGDIRendererContext)
 {
   pGDIRendererContext->base.Release = (void (*)(LPRENDERERCONTEXT)) & GDIRendererContext_Release;
   pGDIRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int)) & GDIRendererContext_Resize;
-  pGDIRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTLDATA, HWND)) & GDIRendererContext_Draw;
+  pGDIRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTL2)) & GDIRendererContext_Draw;
   pGDIRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*)) &GDIRendererContext_LoadWICBitmap;
 }
 
-LPGDIRENDERERCONTEXT CreateGDIRenderer()
+LPGDIRENDERERCONTEXT CreateGDIRenderer(void)
 {
   LPGDIRENDERERCONTEXT pGDIRendererContext = NULL;
 
@@ -1962,7 +2515,7 @@ LPGDIRENDERERCONTEXT CreateGDIRenderer()
  *  Render Control  *
  ********************/
 
-LPRENDERERCONTEXT CreateRendererContext()
+LPRENDERERCONTEXT CreateRendererContext(void)
 {
   LPPANIVIEWAPP pApp = GetApp();
   LPRENDERERCONTEXT pRendererContext = NULL;
@@ -1985,153 +2538,6 @@ LPRENDERERCONTEXT CreateRendererContext()
   return pRendererContext;
 }
 
-LPRENDERERCONTEXT RenderCtl_GetRendererContext(LPRENDERCTLDATA pWndData)
-{
-  return pWndData->m_rendererContext;
-}
-
-HRESULT RenderCtl_InitializeWIC(LPRENDERCTLDATA wndData)
-{
-  HRESULT hr = S_OK;
-  IWICImagingFactory** ppIWICFactory = &wndData->m_pIWICFactory;
-
-  hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (LPVOID)ppIWICFactory);
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-    return NULL;
-  }
-
-  return hr;
-}
-
-BOOL RenderCtl_OnCreate(HWND hWnd, LPCREATESTRUCT lpcs)
-{
-  UNREFERENCED_PARAMETER(lpcs);
-
-  LPRENDERCTLDATA pWndData = (LPRENDERCTLDATA) calloc(1, sizeof(RENDERCTLDATA));
-  pWndData->m_hWnd = hWnd;
-
-  RenderCtl_InitializeWIC(pWndData);
-  pWndData->m_rendererContext = CreateRendererContext();
-
-  SetWindowLongPtr(hWnd, 0, (LONG_PTR) pWndData);
-  return TRUE;
-}
-
-void RenderCtl_OnSize(HWND hWnd, UINT state, int cx, int cy)
-{
-  UNREFERENCED_PARAMETER(hWnd);
-  UNREFERENCED_PARAMETER(state);
-
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
-  if (pRendererContext)
-  {
-    pRendererContext->Resize(pRendererContext, cx, cy);
-  }
-}
-
-void RenderCtl_OnPaint(HWND hWnd)
-{
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  HRESULT hr = S_OK;
-
-  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
-  if (pRendererContext)
-  {
-    pRendererContext->Draw(pRendererContext, wndData, hWnd);
-  }
-
-  ValidateRect(hWnd, NULL);
-}
-
-void RenderCtl_OnSendNudes(HWND hWnd)
-{
-  HRESULT hr = S_OK;
-
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  LPWSTR szFilePath;
-  hr = InvokeFileOpenDialog(&szFilePath);
-  if (SUCCEEDED(hr))
-  {
-    hr = RenderCtl_LoadFromFile(wndData, szFilePath);
-
-    if (FAILED(hr)) {
-      PopupError(hr, NULL);
-      assert(FALSE);
-    }
-  }
-}
-
-void RenderCtl_OnFilePrev(HWND hWnd)
-{
-  HRESULT hr = S_OK;
-
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  WCHAR szNextFile[MAX_PATH] = { 0 };
-  NextFileInDir(wndData, FALSE, szNextFile);
-
-  hr = RenderCtl_LoadFromFile(wndData, szNextFile);
-
-  if (FAILED(hr)) {
-    PopupError(hr, NULL);
-    assert(FALSE);
-  }
-}
-
-void RenderCtl_OnFileNext(HWND hWnd)
-{
-  HRESULT hr = S_OK;
-
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  WCHAR szNextFile[MAX_PATH] = { 0 };
-  NextFileInDir(wndData, TRUE, szNextFile);
-
-  if (szNextFile[0] != '\0')
-  {
-    hr = RenderCtl_LoadFromFile(wndData, szNextFile);
-    if (FAILED(hr)) {
-      PopupError(hr, NULL);
-      assert(FALSE);
-    }
-  }
-}
-
-void RenderCtl_OnFitCmd(HWND hWnd)
-{
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  LPPANIVIEWAPP pApp = GetApp();
-
-  assert(wndData);
-
-  pApp->m_settings.bFit = !pApp->m_settings.bFit;
-  InvalidateRect(wndData->m_hWnd, NULL, FALSE);
-}
-
-void RenderCtl_OnDestroy(HWND hWnd)
-{
-  LPRENDERCTLDATA wndData = (LPRENDERCTLDATA) GetWindowLongPtr(hWnd, 0);
-  assert(wndData);
-
-  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
-  if (pRendererContext) {
-    pRendererContext->Release(pRendererContext);
-  }
-
-  free(wndData);
-}
-
 COMDLG_FILTERSPEC c_rgReadTypes[] = {
   {L"Common picture file formats", L"*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.pgm"},
   {L"Windows/OS2 Bitmap", L"*.bmp"},
@@ -2142,7 +2548,7 @@ COMDLG_FILTERSPEC c_rgReadTypes[] = {
   {L"All files", L"*.*"},
 };
 
-HRESULT InvokeFileOpenDialog(LPWSTR *szPath)
+HRESULT InvokeFileOpenDialog(LPWSTR *ppszPath)
 {
   HRESULT hr = S_OK;
 
@@ -2153,7 +2559,7 @@ HRESULT InvokeFileOpenDialog(LPWSTR *szPath)
       &IID_IFileDialog, (LPVOID)&pFileDialog);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
-    assert(hr);
+    assert(SUCCEEDED(hr));
     goto error;
   }
 
@@ -2161,7 +2567,7 @@ HRESULT InvokeFileOpenDialog(LPWSTR *szPath)
       ARRAYSIZE(c_rgReadTypes), c_rgReadTypes);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
-    assert(hr);
+    assert(SUCCEEDED(hr));
     goto error;
   }
 
@@ -2173,22 +2579,22 @@ HRESULT InvokeFileOpenDialog(LPWSTR *szPath)
   else if (FAILED(hr))
   {
       PopupError(hr, NULL);
-      assert(hr);
+      assert(SUCCEEDED(hr));
       goto error;
   }
 
   hr = pFileDialog->lpVtbl->GetResult(pFileDialog, &pShellItemResult);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
-    assert(hr);
+    assert(SUCCEEDED(hr));
     goto error;
   }
 
   hr = pShellItemResult->lpVtbl->GetDisplayName(pShellItemResult,
-      SIGDN_FILESYSPATH, szPath);
+      SIGDN_FILESYSPATH, ppszPath);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
-    assert(hr);
+    assert(SUCCEEDED(hr));
     goto error;
   }
 
@@ -2199,45 +2605,19 @@ error:
   return hr;
 }
 
-HRESULT RenderCtl_LoadFromFile(LPRENDERCTLDATA wndData, LPWSTR pszPath)
+IWICBitmapSource* WICLoadFromMemory(int width, int height, unsigned char* data, REFWICPixelFormatGUID pixelFormat)
 {
-  FILE *pf = NULL;
+  (void)pixelFormat;
 
-  pf = _wfopen(pszPath, L"rb");
-  if (!pf)
-  {
-    MessageBox(NULL, L"Cound not open file", NULL, MB_OK | MB_ICONERROR);
-    return E_FAIL;
-  }
-
-  const char pgmMagic[] = { 'P', '5' };
-
-  char magic[2];
-  fread(magic, sizeof(magic), 1, pf);
-
-  HRESULT hResult = E_FAIL;
-  if (!memcmp(magic, pgmMagic, sizeof(magic)))
-  {
-    hResult = RenderCtl_LoadFromFilePGM(wndData, pszPath, pf);
-  }
-  else {
-    hResult = RenderCtl_LoadFromFileWIC(wndData, pszPath);
-  }
-
-  fclose(pf);
-
-  return hResult;
-}
-
-IWICBitmapSource* WICLoadFromMemory(LPRENDERCTLDATA pWndData, int width, int height, unsigned char* data, REFWICPixelFormatGUID pixelFormat)
-{
   HRESULT hr = S_OK;
 
   IWICBitmap* pIWICBitmap;
   IWICFormatConverter* pConvertedSourceBitmap = NULL;
 
-  hr = pWndData->m_pIWICFactory->lpVtbl->CreateBitmapFromMemory(
-    pWndData->m_pIWICFactory,
+  LPPANIVIEWAPP pApp = GetApp();
+
+  hr = pApp->m_pIWICFactory->lpVtbl->CreateBitmapFromMemory(
+    pApp->m_pIWICFactory,
     width, height,
     &GUID_WICPixelFormat8bppGray,
     width, width * height,
@@ -2251,8 +2631,8 @@ IWICBitmapSource* WICLoadFromMemory(LPRENDERCTLDATA pWndData, int width, int hei
   }
 
   /* Convert the image to 32bppPBGRA */
-  hr = pWndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
-    pWndData->m_pIWICFactory,
+  hr = pApp->m_pIWICFactory->lpVtbl->CreateFormatConverter(
+    pApp->m_pIWICFactory,
     &pConvertedSourceBitmap);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
@@ -2274,8 +2654,8 @@ IWICBitmapSource* WICLoadFromMemory(LPRENDERCTLDATA pWndData, int width, int hei
     goto fail;
   }
 
-  SAFE_RELEASE(pWndData->m_pConvertedSourceBitmap);
-  pWndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
+  SAFE_RELEASE(pApp->m_pConvertedSourceBitmap);
+  pApp->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
 
 fail:
   if (FAILED(hr)) {
@@ -2283,47 +2663,10 @@ fail:
   }
   SAFE_RELEASE(pIWICBitmap);
 
-  return pConvertedSourceBitmap;
+  return (IWICBitmapSource*) pConvertedSourceBitmap;
 }
 
-HRESULT RenderCtl_LoadFromFilePGM(LPRENDERCTLDATA wndData, PWSTR pszPath, FILE *pf)
-{
-  HRESULT hr = E_FAIL;
-
-  IWICBitmap *pIWICBitmap = NULL;
-  ID2D1Bitmap *pD2DBitmap = NULL;
-  IWICFormatConverter *pConvertedSourceBitmap = NULL;
-
-  int width;
-  int height;
-  int depth;
-  fscanf(pf, "%d %d\n%d\n", &width, &height, &depth);
-
-  if (depth != 255) {
-    return E_FAIL;
-  }
-
-  size_t dataLength = (size_t)width * height;
-  unsigned char *data = (unsigned char *)calloc(dataLength, 1);
-  fread(data, dataLength, 1, pf);
-
-  pConvertedSourceBitmap = WICLoadFromMemory(wndData, width, height, data, &GUID_WICPixelFormat8bppGray);
-  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
-  if (pRendererContext) {
-    pRendererContext->LoadWICBitmap(pRendererContext, pConvertedSourceBitmap);
-  }
-
-  /* Copy path to window data */
-  StringCchCopy(wndData->szPath, MAX_PATH, pszPath);
-
-fail:
-
-  free(data);
-
-  return hr;
-}
-
-IWICBitmapSource* WICDecodeFromFilename(LPRENDERCTLDATA pWndData, LPWSTR pszPath)
+IWICBitmapSource* WICDecodeFromFilename(LPWSTR pszPath)
 {
   HRESULT hr = S_OK;
 
@@ -2331,9 +2674,11 @@ IWICBitmapSource* WICDecodeFromFilename(LPRENDERCTLDATA pWndData, LPWSTR pszPath
   IWICBitmapFrameDecode* pFrame = NULL;
   IWICFormatConverter* pConvertedSourceBitmap = NULL;
 
+  LPPANIVIEWAPP pApp = GetApp();
+
   /* Request image decoder COM object */
-  hr = pWndData->m_pIWICFactory->lpVtbl->CreateDecoderFromFilename(
-    pWndData->m_pIWICFactory,
+  hr = pApp->m_pIWICFactory->lpVtbl->CreateDecoderFromFilename(
+    pApp->m_pIWICFactory,
     pszPath,  /* Path to the image to be decoded */
     NULL, /* Not preferring any particular vendor */
     GENERIC_READ, /* Desired read access to the file */
@@ -2354,8 +2699,8 @@ IWICBitmapSource* WICDecodeFromFilename(LPRENDERCTLDATA pWndData, LPWSTR pszPath
   }
 
   /* Convert the frame to 32bppPBGRA */
-  hr = pWndData->m_pIWICFactory->lpVtbl->CreateFormatConverter(
-    pWndData->m_pIWICFactory,
+  hr = pApp->m_pIWICFactory->lpVtbl->CreateFormatConverter(
+    pApp->m_pIWICFactory,
     &pConvertedSourceBitmap);
   if (FAILED(hr)) {
     PopupError(hr, NULL);
@@ -2377,8 +2722,8 @@ IWICBitmapSource* WICDecodeFromFilename(LPRENDERCTLDATA pWndData, LPWSTR pszPath
     goto fail;
   }
 
-  SAFE_RELEASE(pWndData->m_pConvertedSourceBitmap);
-  pWndData->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
+  SAFE_RELEASE(pApp->m_pConvertedSourceBitmap);
+  pApp->m_pConvertedSourceBitmap = pConvertedSourceBitmap;
 
 fail:
 
@@ -2389,29 +2734,15 @@ fail:
     SAFE_RELEASE(pConvertedSourceBitmap);
   }
 
-  return pConvertedSourceBitmap;
+  return (IWICBitmapSource *) pConvertedSourceBitmap;
 }
 
-HRESULT RenderCtl_LoadFromFileWIC(LPRENDERCTLDATA wndData, LPWSTR pszPath)
+int WstringComparator(const void *str1, size_t size1, const void *str2, size_t size2)
 {
-  HRESULT hr = S_OK;
+  UNREFERENCED_PARAMETER(size1);
+  UNREFERENCED_PARAMETER(size2);
 
-  IWICFormatConverter *pConvertedSourceBitmap = NULL;
-
-  pConvertedSourceBitmap = WICDecodeFromFilename(wndData, pszPath);
-
-  LPRENDERERCONTEXT pRendererContext = RenderCtl_GetRendererContext(wndData);
-  if (pRendererContext) {
-    pRendererContext->LoadWICBitmap(pRendererContext, (IWICBitmapSource *) pConvertedSourceBitmap);
-  }
-
-  StringCchCopy(wndData->szPath, MAX_PATH, pszPath);
-  return hr;
-}
-
-BOOL WstringComparator(void *str1, void *str2)
-{
-  return wcscmp(str1, str2) > 0;
+  return wcscmp(str1, str2);
 }
 
 int GetFileMIMEType(PCWSTR pszPath)
@@ -2420,9 +2751,10 @@ int GetFileMIMEType(PCWSTR pszPath)
   unsigned char magicBuffer[80] = { 0 };
   size_t fileSize = 0;
   int mime = MIME_UNKNOWN;
+  errno_t err;
 
-  fp = _wfopen(pszPath, L"rb");
-  if (fp)
+  err = _wfopen_s(&fp, pszPath, L"rb");
+  if (!err && fp)
   {
     fseek(fp, 0, SEEK_END);
     fileSize = ftell(fp);
@@ -2460,14 +2792,14 @@ int GetFileMIMEType(PCWSTR pszPath)
   return mime;
 }
 
-BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
+BOOL NextFileInDir(PWSTR pszCurrent, BOOL fNext, PWSTR lpPathOut) {
   WCHAR szDir[MAX_PATH] = { 0 };
   WCHAR szMask[MAX_PATH] = { 0 };
   WCHAR szPath[MAX_PATH] = { 0 };
   LPWSTR pszFileName = NULL;
 
   /* Get file directory */
-  GetFullPathName(pRenderCtl->szPath, MAX_PATH, szDir, &pszFileName);
+  GetFullPathName(pszCurrent, MAX_PATH, szDir, &pszFileName);
   PathCchRemoveFileSpec(szDir, MAX_PATH);
 
   /* Prepare search filter mask string */
@@ -2480,7 +2812,7 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   HANDLE hSearch;
   hSearch = FindFirstFile(szMask, &ffd);
 
-  DOUBLE_LINK_LIST dirList = { 0 };
+  DOUBLELINKLIST dirList = { 0 };
   dirList.pfnSort = WstringComparator;
 
   if (hSearch == INVALID_HANDLE_VALUE)
@@ -2508,11 +2840,14 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
 
     /* Make path string shared */
     LPWSTR lpszPath = calloc(1, sizeof(szPath));
-    StringCchCopy(lpszPath, MAX_PATH, szPath);
+    if (lpszPath) {
+      StringCchCopy(lpszPath, MAX_PATH, szPath);
+      size_t len;
+      StringCchLength(lpszPath, STRSAFE_MAX_CCH, &len);
 
-    /* Append path to list */
-    DoubleLinkList_AppendFront(&dirList, lpszPath, TRUE);
-
+      /* Append path to list */
+      DoubleLinkList_AppendFront(&dirList, lpszPath, (len + 1) * sizeof(WCHAR), TRUE);
+    }
   } while (FindNextFile(hSearch, &ffd));
 
   FindClose(hSearch);
@@ -2521,22 +2856,22 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   DoubleLinkList_Sort(&dirList);
 
   PCWSTR pNextPathData = NULL;
-  for (DOUBLE_LINK_NODE *node = dirList.pBegin; node; node = node->pNext) {
-    if (!(wcscmp(node->pData, pRenderCtl->szPath))) {
+  for (DOUBLELINKLISTNODE *node = dirList.pBegin; node; node = node->pNext) {
+    if (!(wcscmp(node->pValue, pszCurrent))) {
       if (fNext) {
-        if (node->pNext && node->pNext->pData) {
-          pNextPathData = (PCWSTR) node->pNext->pData;
+        if (node->pNext && node->pNext->pValue) {
+          pNextPathData = (PCWSTR) node->pNext->pValue;
         }
         else {
-          pNextPathData = (PCWSTR) dirList.pBegin->pData;
+          pNextPathData = (PCWSTR) dirList.pBegin->pValue;
         }
       }
       else {
-        if (node->pPrev && node->pPrev->pData) {
-          pNextPathData = (PCWSTR) node->pPrev->pData;
+        if (node->pPrev && node->pPrev->pValue) {
+          pNextPathData = (PCWSTR) node->pPrev->pValue;
         }
         else {
-          pNextPathData = (PCWSTR) dirList.pEnd->pData;
+          pNextPathData = (PCWSTR) dirList.pEnd->pValue;
         }
       }
 
@@ -2549,16 +2884,16 @@ BOOL NextFileInDir(LPRENDERCTLDATA pRenderCtl, BOOL fNext, LPWSTR lpPathOut) {
   }
 
   /* Destroy the list */
-  for (DOUBLE_LINK_NODE *node = dirList.pBegin; node;) {
+  for (DOUBLELINKLISTNODE *node = dirList.pBegin; node;) {
     if (node->pNext) {
       node->pNext->pPrev = NULL;
     }
 
-    if (node->pData) {
-      free(node->pData);
+    if (node->pValue) {
+      free(node->pValue);
     }
 
-    DOUBLE_LINK_NODE *next = node->pNext;
+    DOUBLELINKLISTNODE *next = node->pNext;
     free(node);
     node = next;
   }
@@ -2578,18 +2913,23 @@ INT_PTR CALLBACK AboutDlgProc(HWND hWnd, UINT message, WPARAM wParam,
         HINSTANCE hInstance = GetModuleHandle(NULL);
 
         HRSRC hResInfo = FindResource(hInstance, MAKEINTRESOURCE(ID_ABOUT_TEXT), RT_RCDATA);
-        HGLOBAL hGlob = LoadResource(hInstance, hResInfo);
-        DWORD dwSize = SizeofResource(hInstance, hResInfo);
+        if (hResInfo) {
+          HGLOBAL hGlob = LoadResource(hInstance, hResInfo);
+          if (hGlob) {
+            DWORD dwSize = SizeofResource(hInstance, hResInfo);
 
-        const char* pszText = LockResource(hGlob);
+            const char* pszText = LockResource(hGlob);
 
-        int len = MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, NULL, 0);
-        g_pszAboutString = calloc(len, len * sizeof(WCHAR));
+            int len = MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, NULL, 0);
+            g_pszAboutString = calloc(len, len * sizeof(WCHAR));
+            if (g_pszAboutString) {
+              MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, g_pszAboutString, len);
+              SetDlgItemText(hWnd, IDC_ABOUTTEXT, g_pszAboutString);
+            }
 
-        MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, g_pszAboutString, len);
-        SetDlgItemText(hWnd, IDC_ABOUTTEXT, g_pszAboutString);
-
-        FreeResource(hResInfo);
+            FreeResource(hResInfo);
+          }
+        }
       }
       break;
 
@@ -2668,25 +3008,25 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
         {
           HWND hToolbarIconSel = GetDlgItem(hWnd, IDC_TOOLBARICONSEL); 
 
-          int nItem;
-          nItem = ComboBox_AddString(hToolbarIconSel, L"Classic 16px");
-          ComboBox_SetItemData(hToolbarIconSel, nItem,
+          int nItem2;
+          nItem2 = ComboBox_AddString(hToolbarIconSel, L"Classic 16px");
+          ComboBox_SetItemData(hToolbarIconSel, nItem2,
               (LPARAM) TOOLBARTHEME_DEFAULT_16PX);
 
-          nItem = ComboBox_AddString(hToolbarIconSel, L"Classic 24px (Default)");
-          ComboBox_SetItemData(hToolbarIconSel, nItem,
+          nItem2 = ComboBox_AddString(hToolbarIconSel, L"Classic 24px (Default)");
+          ComboBox_SetItemData(hToolbarIconSel, nItem2,
               (LPARAM) TOOLBARTHEME_DEFAULT_24PX);
 
-          nItem = ComboBox_AddString(hToolbarIconSel, L"Classic 32px");
-          ComboBox_SetItemData(hToolbarIconSel, nItem,
+          nItem2 = ComboBox_AddString(hToolbarIconSel, L"Classic 32px");
+          ComboBox_SetItemData(hToolbarIconSel, nItem2,
               (LPARAM) TOOLBARTHEME_DEFAULT_32PX);
 
-          nItem = ComboBox_AddString(hToolbarIconSel, L"Modern");
-          ComboBox_SetItemData(hToolbarIconSel, nItem,
+          nItem2 = ComboBox_AddString(hToolbarIconSel, L"Modern");
+          ComboBox_SetItemData(hToolbarIconSel, nItem2,
               (LPARAM) TOOLBARTHEME_MODERN_24PX);
 
-          nItem = ComboBox_AddString(hToolbarIconSel, L"Fugue Icons");
-          ComboBox_SetItemData(hToolbarIconSel, nItem,
+          nItem2 = ComboBox_AddString(hToolbarIconSel, L"Fugue Icons");
+          ComboBox_SetItemData(hToolbarIconSel, nItem2,
               (LPARAM) TOOLBARTHEME_FUGUEICONS_24PX);
         }
 
@@ -2735,13 +3075,9 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
           int rendererType = (int) ComboBox_GetItemData(hRendererSel, nCurSel);
           
           if (rendererType != pSettings->nRendererType)
-          {
-            MAINFRAMEDATA* pMainWndData = GetWindowLongPtr(pApp->hWndMain, 0);
-            RENDERCTLDATA* pRenderCtlData = GetWindowLongPtr(pMainWndData->hRenderer, 0);
-            
+          {            
             pSettings->nRendererType = rendererType;
-
-            pRenderCtlData->m_rendererContext = CreateRendererContext();
+            pApp->m_rendererContext = CreateRendererContext();
           }          
 
           EndDialog(hWnd, 0);
@@ -2768,28 +3104,32 @@ INT_PTR CALLBACK EULADlgProc(HWND hWnd, UINT message, WPARAM wParam,
         HINSTANCE hInstance = GetModuleHandle(NULL);
 
         HRSRC hResInfo = FindResource(hInstance, MAKEINTRESOURCE(ID_EULA_TEXT), RT_RCDATA);
-        HGLOBAL hGlob = LoadResource(hInstance, hResInfo);
-        DWORD dwSize = SizeofResource(hInstance, hResInfo);
+        if (hResInfo) {
+          HGLOBAL hGlob = LoadResource(hInstance, hResInfo);
+          if (hGlob) {
+            DWORD dwSize = SizeofResource(hInstance, hResInfo);
 
-        const char* pszText = LockResource(hGlob);
+            const char* pszText = LockResource(hGlob);
 
-        int len = MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, NULL, 0);
-        g_pszEULAText = calloc(len, len * sizeof(WCHAR));
+            int len = MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, NULL, 0);
+            g_pszEULAText = calloc(len, len * sizeof(WCHAR));
 
-        MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, g_pszEULAText, len);
+            MultiByteToWideChar(CP_UTF8, 0, pszText, dwSize, g_pszEULAText, len);
 
-        HWND hRichEdit = GetDlgItem(hWnd, IDC_EULATEXT);
+            HWND hRichEdit = GetDlgItem(hWnd, IDC_EULATEXT);
 
-        SETTEXTEX ste;
-        ste.codepage = CP_UTF8;
-        ste.flags = ST_DEFAULT;
-        SendMessage(hRichEdit, EM_SETTEXTEX, (WPARAM) &ste, (LPARAM) g_pszEULAText);
+            SETTEXTEX ste;
+            ste.codepage = CP_UTF8;
+            ste.flags = ST_DEFAULT;
+            SendMessage(hRichEdit, EM_SETTEXTEX, (WPARAM)&ste, (LPARAM)g_pszEULAText);
 
-        DWORD dwStyle = GetWindowStyle(hRichEdit);
-        dwStyle &= ES_READONLY;
-        // SetWindowLongPtr(hRichEdit, GWL_STYLE, dwStyle);
+            DWORD dwStyle = GetWindowStyle(hRichEdit);
+            dwStyle &= ES_READONLY;
+            // SetWindowLongPtr(hRichEdit, GWL_STYLE, dwStyle);
 
-        FreeResource(hResInfo);
+            FreeResource(hResInfo);
+          }
+        }
       }
     break;
     case WM_COMMAND:

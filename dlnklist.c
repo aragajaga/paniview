@@ -3,72 +3,110 @@
 #include "dlnklist.h"
 
 #ifdef UNIT_TESTING
+extern void* _test_malloc(const size_t size, const char* file, const int line);
+ 
+#define malloc(size) _test_malloc(size, __FILE__, __LINE__)
+
 extern void* _test_calloc(const size_t num, const size_t size, const char* file,
-    const int line);
+  const int line);
 
 #define calloc(num, size) _test_calloc(num, size, __FILE__, __LINE__)
 #endif
+
+void DoubleLinkList_Init(LPDOUBLELINKLIST pDoubleLinkList, DOUBLELINKLISTSORTFUNC pfnSort)
+{
+  pDoubleLinkList->pBegin = NULL;
+  pDoubleLinkList->pEnd = NULL;
+  pDoubleLinkList->pHead = NULL;
+  pDoubleLinkList->pfnSort = pfnSort;
+}
+
+LPDOUBLELINKLISTNODE DoubleLinkList_CreateNode(void)
+{
+  LPDOUBLELINKLISTNODE pNode = (LPDOUBLELINKLISTNODE) malloc(sizeof(DOUBLELINKLISTNODE));
+  if (pNode)
+  {
+    pNode->pNext = NULL;
+    pNode->pPrev = NULL;
+    pNode->pValue = NULL;
+    pNode->valueSize = 0;
+
+    return pNode;
+  }
+
+  return NULL;
+}
 
 /*
  * DoubleLinkList_AppendBack
  *
  * Insert an element at the beginning of double linked list
- * `data` any data passed by void pointer
+ * `pValue` any data passed by void pointer to be copied
+ * `valueSize` size of the data to be copied
  * `bSeek` - set the pHead pointer to the inserted node
- *
- * NOTE: The caller manages the cleanup and memory deallocation
  * */
-void DoubleLinkList_AppendBack(DOUBLE_LINK_LIST *list, void *data, BOOL bSeek)
+void DoubleLinkList_AppendBack(LPDOUBLELINKLIST pDoubleLinkList, const void* pValue, size_t valueSize, BOOL bSeek)
 {
-  DOUBLE_LINK_NODE *node = calloc(1, sizeof(DOUBLE_LINK_NODE));
-  assert(node);
-  node->pData = data;
+  LPDOUBLELINKLISTNODE pNode = DoubleLinkList_CreateNode();
 
-  if (!list->pEnd) {
-    list->pEnd = node;
+  assert(pNode);
+  pNode->pValue = malloc(valueSize);
+  if (pNode->pValue) {
+    pNode->valueSize = valueSize;
+
+    memcpy(pNode->pValue, pValue, valueSize);
+
+    if (!pDoubleLinkList->pEnd) {
+      pDoubleLinkList->pEnd = pNode;
+    }
+
+    if (bSeek) {
+      pDoubleLinkList->pHead = pNode;
+    }
+
+    if (pDoubleLinkList->pBegin) {
+      pDoubleLinkList->pBegin->pPrev = pNode;
+      pNode->pNext = pDoubleLinkList->pBegin;
+    }
+
+    pDoubleLinkList->pBegin = pNode;
   }
-
-  if (bSeek) {
-    list->pHead = node;
-  }
-
-  if (list->pBegin) {
-    list->pBegin->pPrev = node;
-    node->pNext = list->pBegin;
-  }
-
-  list->pBegin = node;
 }
 
 /*
  * DoubleLinkList_AppendFront
  *
  * Insert an element at the end of double linked list
- * `data` any data passed by void pointer
+ * `pValue` any data passed by void pointer to be copied
+ * `valueSize` size of the data to be copied
  * `bSeek` - set the pHead pointer to the inserted node
- *
- * NOTE: The caller manages the cleanup and memory deallocation
  * */
-void DoubleLinkList_AppendFront(DOUBLE_LINK_LIST *list, void *data, BOOL bSeek)
+void DoubleLinkList_AppendFront(LPDOUBLELINKLIST pDoubleLinkList, const void* pValue, size_t valueSize, BOOL bSeek)
 {
-  DOUBLE_LINK_NODE *node = calloc(1, sizeof(DOUBLE_LINK_NODE));
-  assert(node);
-  node->pData = data;
+  LPDOUBLELINKLISTNODE pNode = DoubleLinkList_CreateNode();
+  if (pNode) {
+    pNode->valueSize = valueSize;
 
-  if (!list->pBegin) {
-    list->pBegin = node;
+    pNode->pValue = malloc(valueSize);
+    if (pNode->pValue) {
+      memcpy(pNode->pValue, pValue, valueSize);
+
+      if (!pDoubleLinkList->pBegin) {
+        pDoubleLinkList->pBegin = pNode;
+      }
+
+      if (bSeek) {
+        pDoubleLinkList->pHead = pNode;
+      }
+
+      if (pDoubleLinkList->pEnd) {
+        pDoubleLinkList->pEnd->pNext = pNode;
+        pNode->pPrev = pDoubleLinkList->pEnd;
+      }
+
+      pDoubleLinkList->pEnd = pNode;
+    }
   }
-
-  if (bSeek) {
-    list->pHead = node;
-  }
-
-  if (list->pEnd) {
-    list->pEnd->pNext = node;
-    node->pPrev = list->pEnd;
-  }
-
-  list->pEnd = node;
 }
 
 /*
@@ -79,24 +117,41 @@ void DoubleLinkList_AppendFront(DOUBLE_LINK_LIST *list, void *data, BOOL bSeek)
  *
  * Note: if pfnSort is not provided, the function will fail
  * */
-void DoubleLinkList_Sort(DOUBLE_LINK_LIST *list) {
-  if (!list->pfnSort) {
-    assert(FALSE);
+void DoubleLinkList_Sort(LPDOUBLELINKLIST pDoubleLinkList) {
+  if (!pDoubleLinkList->pfnSort) {
+    fprintf(stderr, "Error: Sorting function not provided.\n");
     return;
   }
 
   /* List is empty, nothing to sort */
-  if (!list->pBegin)
+  if (!pDoubleLinkList->pBegin) {
     return;
+  }
 
-  for (DOUBLE_LINK_NODE *node = list->pBegin; node; node = node->pNext) {
-    for (DOUBLE_LINK_NODE *index = node->pNext; index; index = index->pNext) {
-      if (list->pfnSort(node->pData, index->pData)) {
-        void *temp = node->pData;
-        node->pData = index->pData;
-        index->pData = temp;
+  for (LPDOUBLELINKLISTNODE pNode1 = pDoubleLinkList->pBegin; pNode1; pNode1 = pNode1->pNext) {
+    for (LPDOUBLELINKLISTNODE pNode2 = pNode1->pNext; pNode2; pNode2 = pNode2->pNext) {
+      if (pDoubleLinkList->pfnSort(pNode1->pValue, pNode1->valueSize, pNode2->pValue, pNode2->valueSize) < 0) {
+        /* Swap data pointers */
+        void* temp = pNode1->pValue;
+        pNode1->pValue = pNode2->pValue;
+        pNode2->pValue = temp;
       }
     }
   }
 }
 
+/*
+ * Function to free memory allocated for the list
+ */
+void DoubleLinkList_Free(LPDOUBLELINKLIST pDoubleLinkList) {
+  LPDOUBLELINKLISTNODE pCurrent = pDoubleLinkList->pBegin;
+  while (pCurrent) {
+    LPDOUBLELINKLISTNODE pNext = pCurrent->pNext;
+    free(pCurrent->pValue);
+    free(pCurrent);
+    pCurrent = pNext;
+  }
+
+  /* Reset list pointers */
+  pDoubleLinkList->pBegin = pDoubleLinkList->pEnd = pDoubleLinkList->pHead = NULL;
+}

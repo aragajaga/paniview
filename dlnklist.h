@@ -7,25 +7,28 @@
 #ifndef PANIVIEW_DLNKLIST_H
 #define PANIVIEW_DLNKLIST_H
 
-typedef struct _tagDOUBLE_LINK_NODE DOUBLE_LINK_NODE;
-typedef struct _tagDOUBLE_LINK_LIST DOUBLE_LINK_LIST;
-typedef BOOL (*DLNKLIST_SORT_FUNC)(void *, void *);
+typedef struct _tagDOUBLELINKLISTNODE DOUBLELINKLISTNODE, *LPDOUBLELINKLISTNODE;
+typedef struct _tagDOUBLELINKLIST DOUBLELINKLIST, *LPDOUBLELINKLIST;
+typedef int (*DOUBLELINKLISTSORTFUNC)(const void *, size_t, const void *, size_t);
 
-struct _tagDOUBLE_LINK_NODE {
-  void *pData;
-  DOUBLE_LINK_NODE *pNext;
-  DOUBLE_LINK_NODE *pPrev;
+struct _tagDOUBLELINKLISTNODE {
+  LPDOUBLELINKLISTNODE pNext;
+  LPDOUBLELINKLISTNODE pPrev;
+  void *pValue;
+  size_t valueSize;
 };
 
-struct _tagDOUBLE_LINK_LIST {
-  DOUBLE_LINK_NODE *pHead;
-  DOUBLE_LINK_NODE *pBegin;
-  DOUBLE_LINK_NODE *pEnd;
-  DLNKLIST_SORT_FUNC pfnSort;
+struct _tagDOUBLELINKLIST {
+  LPDOUBLELINKLISTNODE pHead;
+  LPDOUBLELINKLISTNODE pBegin;
+  LPDOUBLELINKLISTNODE pEnd;
+  DOUBLELINKLISTSORTFUNC pfnSort;
 };
 
-void DoubleLinkList_AppendBack(DOUBLE_LINK_LIST *, void *, BOOL);
-void DoubleLinkList_AppendFront(DOUBLE_LINK_LIST *, void *, BOOL);
-void DoubleLinkList_Sort(DOUBLE_LINK_LIST *);
+void DoubleLinkList_Init(LPDOUBLELINKLIST pDoubleLinkList, DOUBLELINKLISTSORTFUNC pfnSort);
+LPDOUBLELINKLISTNODE DoubleLinkList_CreateNode(void);
+void DoubleLinkList_AppendBack(LPDOUBLELINKLIST pDoubleLinkList, const void* pValue, size_t valueSize, BOOL bSeek);
+void DoubleLinkList_AppendFront(LPDOUBLELINKLIST pDoubleLinkList, const void* pValue, size_t valueSize, BOOL bSeek);
+void DoubleLinkList_Sort(LPDOUBLELINKLIST pDoubleLinkList);
 
 #endif /* PANIVIEW_DLNKLIST_H */
