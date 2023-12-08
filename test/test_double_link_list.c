@@ -1,5 +1,4 @@
-#include "../precomp.h"
-
+﻿#include "../precomp.h"
 #include "../dlnklist.h"
 
 #include <setjmp.h>
@@ -10,37 +9,23 @@ typedef struct _tagDUMMYDATA {
   WCHAR szDummy[80];
 } DUMMYDATA;
 
-static void double_link_list_heap_test(void **state)
+static void double_link_list_heap_test(void** state)
 {
   UNREFERENCED_PARAMETER(state);
 
-  DOUBLE_LINK_LIST list = { 0 };
+  DOUBLELINKLIST linkList;
+  DoubleLinkList_Init(&linkList, NULL);
 
-  for (size_t i = 0; i < 1024; ++i) {
-    void *data = test_calloc(1, sizeof(DUMMYDATA));
+  int val;
+  
+  val = 30;
+  DoubleLinkList_AppendFront(&linkList, &val, sizeof(int), TRUE);
+  
+  val = 10;
+  DoubleLinkList_AppendFront(&linkList, &val, sizeof(int), TRUE);
 
-    ((DUMMYDATA *)data)->nNumber = 42;
-    StringCchCopy(((DUMMYDATA *)data)->szDummy, 80, L"A secret ingredient called victory");
-
-    DoubleLinkList_AppendFront(&list, data, TRUE);
-  }
-
-  for (DOUBLE_LINK_NODE *node = list.pBegin; node;) {
-
-    assert_non_null(node->pData);
-    test_free(node->pData);
-    node->pData = NULL;
-
-    DOUBLE_LINK_NODE *next = node->pNext;
-    if (next) {
-      node->pNext->pPrev = NULL;
-    }
-
-    node->pNext = NULL;
-
-    test_free(node);
-    node = next;
-  }
+  val = 45;
+  DoubleLinkList_AppendFront(&linkList, &val, sizeof(int), TRUE);
 }
 
 struct word_test_pair {
@@ -79,6 +64,49 @@ const struct word_test_pair g_unorderedWordSet[][80] = {
   { 13, L"imminent" },
 };
 
+static BOOL WstringTestPairComparator(const void* p1, size_t size1, const void* p2, size_t size2)
+{
+  return wcscmp(
+    ((struct word_test_pair*)p1)->word,
+    ((struct word_test_pair*)p2)->word) > 0;
+}
+
+static void double_link_list_wstring_sort_test(void** state)
+{
+  DOUBLELINKLIST list;
+  DoubleLinkList_Init(&list, WstringTestPairComparator);
+
+  for (size_t i = 0; i < ARRAYSIZE(g_unorderedWordSet); ++i) {
+    DoubleLinkList_AppendFront(&list, &g_unorderedWordSet[i], sizeof(g_unorderedWordSet[i]), TRUE);
+  }
+
+  DoubleLinkList_Sort(&list);
+
+  int i = 0;
+  for (DOUBLELINKLISTNODE* node = list.pBegin; node; node = node->pNext) {
+    int wordIndex = ((struct word_test_pair*)(node->pValue))->order;
+
+    assert_int_equal(wordIndex, i++);
+  }
+
+  for (DOUBLELINKLISTNODE* node = list.pBegin; node;) {
+    assert_non_null(node->pValue);
+    test_free(node->pValue);
+    node->pValue = NULL;
+
+    DOUBLELINKLISTNODE* next = node->pNext;
+    if (next) {
+      node->pNext->pPrev = NULL;
+    }
+
+    node->pNext = NULL;
+
+    test_free(node);
+    node = next;
+  }
+}
+
+
 const int g_unorderedNumberSet[] = {
     89, -122,  -20,   88,  111,  -36,  -95,  102,  -29,   15,  -55,  -72, -123,
   -116,  -30,   87,  -37,    7,   59,   84,   74,   29, -126,   79,  -69,   42,
@@ -102,97 +130,54 @@ const int g_unorderedNumberSet[] = {
     40,    8,   33,  -18,  -73,   58,  113,   91,  -80
 };
 
-static BOOL IntegerComparator(void *p1, void *p2)
+static int IntegerComparator(const void* p1, size_t size1, const void* p2, size_t size2)
 {
-  return *(int *)p1 > *(int *)p2;
+  return *(int*)p1 - *(int*)p2;
 }
 
-static BOOL WstringTestPairComparator(void *p1, void *p2)
+static void double_link_list_int_sort_test(void** state)
 {
-  return wcscmp(
-      ((struct word_test_pair *)p1)->word,
-      ((struct word_test_pair *)p2)->word) > 0;
-}
+  UNREFERENCED_PARAMETER(state);
 
-static void double_link_list_int_sort_test(void **state)
-{
-  DOUBLE_LINK_LIST list = { 0 };
-  list.pfnSort = IntegerComparator;
+  DOUBLELINKLIST list;
+  DoubleLinkList_Init(&list, IntegerComparator);
 
   for (size_t i = 0; i < ARRAYSIZE(g_unorderedNumberSet); ++i) {
-    void *data = test_calloc(1, sizeof(int));
+    void* data = test_calloc(1, sizeof(int));
 
-    *(int *)data = g_unorderedNumberSet[i];
-    DoubleLinkList_AppendFront(&list, data, TRUE);
+    *(int*)data = g_unorderedNumberSet[i];
+    DoubleLinkList_AppendFront(&list, &data, sizeof(int), TRUE);
   }
 
   DoubleLinkList_Sort(&list);
 
   int i = -127;
-  for (DOUBLE_LINK_NODE *node = list.pBegin; node; node = node->pNext) {
-    assert_int_equal(*((int *)(node->pData)), i++);
+  for (DOUBLELINKLISTNODE* pNode = list.pBegin; pNode; pNode = pNode->pNext) {
+    assert_int_equal(*((int*)(pNode->pValue)), i++);
   }
 
-  for (DOUBLE_LINK_NODE *node = list.pBegin; node;) {
-    assert_non_null(node->pData);
-    test_free(node->pData);
-    node->pData = NULL;
+  for (LPDOUBLELINKLISTNODE pNode = list.pBegin; pNode;) {
+    assert_non_null(pNode->pValue);
+    test_free(pNode->pValue);
+    pNode->pValue = NULL;
 
-    DOUBLE_LINK_NODE *next = node->pNext;
-    if (next) {
-      node->pNext->pPrev = NULL;
+    LPDOUBLELINKLISTNODE pNext = pNode->pNext;
+    if (pNext) {
+      pNode->pNext->pPrev = NULL;
     }
 
-    node->pNext = NULL;
+    pNode->pNext = NULL;
 
-    test_free(node);
-    node = next;
+    test_free(pNode);
+    pNode = pNext;
   }
 }
 
-static void double_link_list_wstring_sort_test(void **state)
-{
-  DOUBLE_LINK_LIST list = { 0 };
-  list.pfnSort = WstringTestPairComparator;
-
-  for (size_t i = 0; i < ARRAYSIZE(g_unorderedWordSet); ++i) {
-    void *data = test_calloc(1, sizeof(struct word_test_pair));
-
-    memcpy(data, &g_unorderedWordSet[i], sizeof(struct word_test_pair));
-    DoubleLinkList_AppendFront(&list, data, TRUE);
-  }
-
-  DoubleLinkList_Sort(&list);
-
-  int i = 0;
-  for (DOUBLE_LINK_NODE *node = list.pBegin; node; node = node->pNext) {
-    int wordIndex = ((struct word_test_pair *)(node->pData))->order;
-
-    assert_int_equal(wordIndex, i++);
-  }
-
-  for (DOUBLE_LINK_NODE *node = list.pBegin; node;) {
-    assert_non_null(node->pData);
-    test_free(node->pData);
-    node->pData = NULL;
-
-    DOUBLE_LINK_NODE *next = node->pNext;
-    if (next) {
-      node->pNext->pPrev = NULL;
-    }
-
-    node->pNext = NULL;
-
-    test_free(node);
-    node = next;
-  }
-}
-int main()
-{
+int main() {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(double_link_list_heap_test),
     cmocka_unit_test(double_link_list_int_sort_test),
-    cmocka_unit_test(double_link_list_wstring_sort_test),
+    cmocka_unit_test(double_link_list_wstring_sort_test)
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

@@ -7,8 +7,6 @@ include(CTest)
 # Generate PE private build string
 set(BUILDSTRING "Built by: $ENV{USER} on <$ENV{NAME}>")
 
-set(GLEW_ROOT "C:\\thirdparty\\msvc-x86_64")
-
 find_package(Git)
 find_package(GLEW REQUIRED)
 
@@ -47,12 +45,13 @@ if(GIT_FOUND)
 endif()
 
 configure_file(version.h.in version.h)
-add_executable(${PROJECT_NAME} WIN32 paniview.c dlnklist.c d2dwrapper.cpp paniview.rc)
+add_executable(${PROJECT_NAME} WIN32 paniview.c dlnklist.c hashmap.c d2dwrapper.cpp paniview.rc)
 target_compile_definitions(${PROJECT_NAME} PRIVATE _UNICODE UNICODE)
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 if(MSVC)
+target_compile_options(${PROJECT_NAME} PRIVATE /W4 /Wall /WX /wd6031 /wd28251 /wd4820 /wd5045 /wd4701 /wd4703)
 target_link_options(${PROJECT_NAME} PRIVATE /MANIFEST:NO)
 else()
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -62,5 +61,20 @@ endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE comctl32 shlwapi pathcch d2d1 windowscodecs GLEW::GLEW)
 
 if(BUILD_TESTING)
-  add_subdirectory(test)
+  find_package(cmocka 1.1.7 REQUIRED)
+
+  set(TEST_TARGETS
+    test_double_link_list
+    test_hash_map
+  )
+  
+  foreach(TEST_TARGET ${TEST_TARGETS})
+    add_executable(${TEST_TARGET} ${CMAKE_CURRENT_SOURCE_DIR}/test/${TEST_TARGET}.c ${CMAKE_CURRENT_SOURCE_DIR}/dlnklist.c ${CMAKE_CURRENT_SOURCE_DIR}/hashmap.c)
+    target_link_libraries(${TEST_TARGET} PRIVATE cmocka::cmocka)
+    add_test(NAME ${TEST_TARGET} COMMAND ${TEST_TARGET})
+    if(TEST_ENV)
+      set_tests_properties(${TEST_TARGET} PROPERTIES ENVIRONMENT "PATH=${TEST_ENV}")
+    endif()
+  endforeach()
+
 endif()
