@@ -251,6 +251,7 @@ HWND PaniViewFrame_Create(LPPANIVIEWFRAME pPaniViewFrame);
 LRESULT PaniViewFrame_WndProc(LPPANIVIEWFRAME pPaniViewFrame, UINT message, WPARAM wParam, LPARAM lParam);
 void PaniViewFrame_PreCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs);
 void PaniViewFrame_PreRegister(LPPANIVIEWFRAME pPaniViewFrame, LPWNDCLASSEX lpwcex);
+void PaniViewFrame_UpdateLayout(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs);
 void PaniViewFrame_OnSize(LPPANIVIEWFRAME pPaniViewFrame, UINT state, int cx, int cy);
 BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPARAM lParam);
@@ -430,9 +431,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
   PaniViewFrame_Init(&pApp->mainFrame);
   HWND hWndMain = PaniViewFrame_Create(&pApp->mainFrame);
-
-  RenderCtl2_Init(&pApp->renderCtl);
-  RenderCtl2_Create(&pApp->renderCtl, hWndMain);
 
   ShowWindow(hWndMain, nCmdShow);
   UpdateWindow(hWndMain); /* Force window contents paint inplace after
@@ -1083,10 +1081,22 @@ HRESULT PaniViewApp_LoadFromFile(PWSTR pszPath)
 
   fclose(pf);
 
+  LPPANIVIEWAPP pApp = GetApp();
+
+  PaniViewApp_SetTitle(pApp, pszPath);
   PaniViewApp_UpdateViewport();
-  
-  
-  
+
+  RECT rcFrameClient;
+  GetClientRect(pApp->mainFrame.base.hWnd, &rcFrameClient);
+  SIZE tbSize;
+  SendMessage(pApp->mainFrame.hToolbar, TB_GETMAXSIZE, 0, (LPARAM)&tbSize);
+
+
+  SetWindowPos(pApp->renderCtl.base.hWnd, NULL,
+      0, 0,
+      rcFrameClient.right - rcFrameClient.left,
+      rcFrameClient.bottom - rcFrameClient.top - tbSize.cy,  /* Subtract the toolbar's heigth */
+      SWP_NOZORDER);
 
   return hResult;
 }
@@ -1526,6 +1536,16 @@ HWND PaniViewFrame_Create(LPPANIVIEWFRAME pPaniViewFrame)
 
   pPaniViewFrame->hToolbar = hWndToolbar;
 
+  /* Create renderer view */
+  LPPANIVIEWAPP pApp = GetApp();
+  RenderCtl2_Init(&pApp->renderCtl);
+  RenderCtl2_Create(&pApp->renderCtl, hWnd);
+
+  /* Recalculate layout and show window */
+  PaniViewFrame_UpdateLayout(pPaniViewFrame);
+  ShowWindow(pPaniViewFrame->base.hWnd, SW_SHOW);
+  UpdateWindow(pPaniViewFrame->base.hWnd);
+
   return hWnd;
 }
 
@@ -1546,7 +1566,7 @@ void PaniViewFrame_PreCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs
 {
   UNREFERENCED_PARAMETER(pPaniViewFrame);
 
-  lpcs->style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+  lpcs->style = WS_OVERLAPPEDWINDOW;
   lpcs->cx = CW_USEDEFAULT;
   lpcs->cy = CW_USEDEFAULT;
   lpcs->lpszName = szPaniView;
@@ -1567,6 +1587,48 @@ void PaniViewFrame_PreRegister(LPPANIVIEWFRAME pPaniViewFrame, LPWNDCLASSEX lpwc
 #define RECTWIDTH(rc) ((rc).right - (rc).left)
 #define RECTHEIGHT(rc) ((rc).bottom - (rc).top)
 
+void PaniViewFrame_UpdateLayout(LPPANIVIEWFRAME pPaniViewFrame)
+{
+    ASSERT(pPaniViewFrame != NULL);
+    ASSERT(pPaniViewFrame->base.hWnd != NULL);
+    ASSERT(IsWindow(pPaniViewFrame->base.hWnd));
+
+    HWND hToolbar = pPaniViewFrame->hToolbar;
+    // ASSERT(hToolbar);
+    // ASSERT(IsWindow(hToolbar));
+    if (!hToolbar || !IsWindow(hToolbar)) {
+        return;
+    }
+
+    RECT rcClient;
+    GetClientRect(pPaniViewFrame->base.hWnd, &rcClient);
+
+    int clientWidth = RECTWIDTH(rcClient);
+    int clientHeight = RECTHEIGHT(rcClient);
+
+    /* Get the toolbar size */
+    SIZE tbSize;
+    SendMessage(pPaniViewFrame->hToolbar, TB_GETMAXSIZE, 0, (LPARAM)&tbSize);
+
+    /* Center toolbar horizontally to view*/
+    int toolbarX = (clientWidth - tbSize.cx) / 2;
+    int toolbarY = clientHeight - tbSize.cy;
+
+    SetWindowPos(pPaniViewFrame->hToolbar, NULL,
+        toolbarX, toolbarY,
+        tbSize.cx, tbSize.cy,
+        SWP_NOZORDER);
+
+    /* Update render view ctl */
+    LPPANIVIEWAPP pApp = GetApp();
+    ASSERT(pApp->renderCtl.base.hWnd);
+    ASSERT(IsWindow(pApp->renderCtl.base.hWnd));
+    SetWindowPos(pApp->renderCtl.base.hWnd, NULL,
+        0, 0,
+        clientWidth, clientHeight - tbSize.cy,  /* Subtract the toolbar'se height */
+        SWP_NOZORDER);
+}
+
 void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs)
 {
   UNREFERENCED_PARAMETER(pPaniViewFrame);
@@ -1586,23 +1648,10 @@ void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs)
 void PaniViewFrame_OnSize(LPPANIVIEWFRAME pPaniViewFrame, UINT state, int cx, int cy)
 {
   UNREFERENCED_PARAMETER(state);
+  UNREFERENCED_PARAMETER(cx);
+  UNREFERENCED_PARAMETER(cy);
 
-  SIZE tbSize;
-  SendMessage(pPaniViewFrame->hToolbar, TB_GETMAXSIZE, 0, (LPARAM)&tbSize);
-
-  SetWindowPos(pPaniViewFrame->hToolbar, NULL,
-    (cx - tbSize.cx) / 2, /* Center horizontally */
-    cy - (tbSize.cy), /* Snap to bottom */
-    tbSize.cx, /* Apply maximum toolbar size */
-    tbSize.cy,
-    SWP_NOZORDER);
-
-  LPPANIVIEWAPP pApp = GetApp();
-  SetWindowPos(pApp->renderCtl.base.hWnd, NULL,
-    0, 0,
-    cx,
-    cy - (tbSize.cy),  /* Subtract the toolbar's heigth */
-    SWP_NOZORDER);
+  PaniViewFrame_UpdateLayout(pPaniViewFrame);
 }
 
 BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPARAM lParam)
