@@ -2434,7 +2434,7 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
   rcSrc.right = imageWidth;
   rcSrc.bottom = imageHeight;
 
-  RectTranslate(&rcDest, -((float)viewWidth / 2.0f), -((float)viewHeight / 2.0f));
+  OffsetRect(&rcDest, -(int)((float)viewWidth / 2.0f), -(int)((float)viewHeight / 2.0f));
 
   if (imageWidth > viewWidth) {
     float ratio = imageHeight / (float)imageWidth;
@@ -2466,7 +2466,7 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
   MatrixMultiply(mat, mat2, mat3);
 
   RectMatrixMultiply(&rcDest, mat3);
-  RectTranslate(&rcDest, (float)viewWidth / 2.0f, (float)viewHeight / 2.0f);
+  OffsetRect(&rcDest, (int)((float)viewWidth / 2.0f), (int)((float)viewHeight / 2.0f));
 
   // RectTranslate(&rcDest, 40.f, 40.f);
 
