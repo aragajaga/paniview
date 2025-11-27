@@ -30,6 +30,7 @@ if (obj) { \
   (obj) = NULL; \
 }
 
+/*
 #ifndef ASSERT
 #ifndef NDEBUG
 #define ASSERT(b) \
@@ -42,6 +43,9 @@ do { \
 #define ASSERT(b)
 #endif
 #endif
+*/
+
+#define ASSERT(expr) _ASSERTE(expr)
 
 const FLOAT DEFAULT_DPI = 96.f;
 

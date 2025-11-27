@@ -49,6 +49,7 @@
 #include <shobjidl.h>
 #include <strsafe.h>
 #include <pathcch.h>
+#include <crtdbg.h>
 
 /* Direct2D headers */
 #include "d2dwrapper.h"
