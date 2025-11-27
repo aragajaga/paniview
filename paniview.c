@@ -1757,8 +1757,8 @@ BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop)
   return StretchBlt(hdcDest,
     rcDest.left,
     rcDest.top,
-    Rect_GetWidth(&rcDest),
-    Rect_GetHeight(&rcDest),
+    RECTWIDTH(rcDest),
+    RECTHEIGHT(rcDest),
     hdcSrc,
     rcSrc.left, rcSrc.top, rcSrc.right, rcSrc.bottom,
     rop);
@@ -2419,14 +2419,14 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
   int imageWidth = pGDIRendererContext->m_width;
   int imageHeight = pGDIRendererContext->m_height;
 
-  int viewWidth = Rect_GetWidth(&rc);
-  int viewHeight = Rect_GetHeight(&rc);
+  int viewWidth = RECTWIDTH(rc);
+  int viewHeight = RECTHEIGHT(rc);
 
   RECT rcDest = {0};
   rcDest.left = 0;
   rcDest.top = 0;
-  rcDest.right = Rect_GetWidth(&rc);
-  rcDest.bottom = Rect_GetHeight(&rc);
+  rcDest.right = RECTWIDTH(rc);
+  rcDest.bottom = RECTHEIGHT(rc);
 
   RECT rcSrc = {0};
   rcSrc.left = 0;
