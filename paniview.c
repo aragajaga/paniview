@@ -2250,6 +2250,7 @@ void OpenGLRendererContext_CreateDeviceResources(LPOPENGLRENDERERCONTEXT pGLRend
 
     OpenGLRendererContext_CreateTexture(pGLRendererContext);
     OpenGLRendererContext_CreateVBO(pGLRendererContext);
+    OpenGLRendererContext_LoadWICBitmap(pGLRendererContext, (IWICBitmapSource*)pApp->m_pConvertedSourceBitmap);
   }
 }
 
@@ -2274,7 +2275,7 @@ void OpenGLRendererContext_Draw(LPOPENGLRENDERERCONTEXT pGLRendererContext, LPRE
   OpenGLRendererContext_CreateDeviceResources(pGLRendererContext, pRenderCtl);
 
   /* Clear */
-  glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+  glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
 
   /* Attach shader */
@@ -2495,6 +2496,16 @@ void InitializeOpenGLRendererContextStruct(LPOPENGLRENDERERCONTEXT pGLRendererCo
   pGLRendererContext->base.Resize = (void (*)(LPRENDERERCONTEXT, int, int)) & OpenGLRendererContext_Resize;
   pGLRendererContext->base.Draw = (void (*)(LPRENDERERCONTEXT, LPRENDERCTL2)) & OpenGLRendererContext_Draw;
   pGLRendererContext->base.LoadWICBitmap = (void (*)(LPRENDERERCONTEXT, IWICBitmapSource*)) & OpenGLRendererContext_LoadWICBitmap;
+  pGLRendererContext->m_hGLContext = NULL;
+  pGLRendererContext->m_textureId = 0;
+  pGLRendererContext->m_programId = 0;
+  pGLRendererContext->m_vertexArray = 0;
+  pGLRendererContext->m_vertexArray = 0;
+  pGLRendererContext->m_uvBuffer = 0;
+  pGLRendererContext->m_viewportWidth = 0.0f;
+  pGLRendererContext->m_viewportHeight = 0.0f;
+  pGLRendererContext->m_imageWidth = 0.0f;
+  pGLRendererContext->m_imageHeight = 0.0f;
 }
 
 LPOPENGLRENDERERCONTEXT CreateOpenGLRenderer(void)
