@@ -2531,13 +2531,21 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
   HDC hdc;
   hdc = GetDC(pRenderCtl->base.hWnd);
 
+  LPPANIVIEWAPP pApp = GetApp();
+  if (!pGDIRendererContext->m_hBitmap && pApp->m_pConvertedSourceBitmap) {
+      GDIRendererContext_LoadWICBitmap(
+          pGDIRendererContext,
+          (IWICBitmapSource*)pApp->m_pConvertedSourceBitmap
+      );
+  }
+
   HDC hBitmapDC = CreateCompatibleDC(hdc);
   HBITMAP hOldBitmap = (HBITMAP) SelectObject(hBitmapDC, (HGDIOBJ) pGDIRendererContext->m_hBitmap);
 
   RECT rc = {0};
   GetClientRect(pRenderCtl->base.hWnd, &rc);
 
-  FillRect(hdc, &rc, CreateSolidBrush(RGB(0, 0xFF, 0)));
+  FillRect(hdc, &rc, GetStockObject(WHITE_BRUSH));
 
   int imageWidth = pGDIRendererContext->m_width;
   int imageHeight = pGDIRendererContext->m_height;
@@ -2594,7 +2602,9 @@ void GDIRendererContext_Draw(LPGDIRENDERERCONTEXT pGDIRendererContext, LPRENDERC
   // RectTranslate(&rcDest, 40.f, 40.f);
 
   SetStretchBltMode(hdc, HALFTONE);
-  RectBlt(hdc, rcDest, hBitmapDC, rcSrc, SRCCOPY);
+  //BitBlt(hdc, 0, 0, viewWidth, viewHeight, hBitmapDC, 0, 0, SRCCOPY);
+  BOOL bResult = RectBlt(hdc, rcDest, hBitmapDC, rcSrc, SRCCOPY);
+  ASSERT(bResult);
 
   SelectObject(hBitmapDC, (HGDIOBJ) hOldBitmap);
 
