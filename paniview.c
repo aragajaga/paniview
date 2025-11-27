@@ -1717,7 +1717,7 @@ void MatrixMultiply(GLfloat mat1[4][4], GLfloat mat2[4][4], GLfloat mat3[4][4])
     for (int j = 0; j < 4; ++j) {
       mat3[i][j] = 0;
       for (int k = 0; k < 4; ++k) {
-        mat3[i][k] += mat1[i][k] * mat2[k][j];
+        mat3[i][j] += mat1[i][k] * mat2[k][j];
       }
     }
   }
@@ -1766,10 +1766,10 @@ BOOL RectBlt(HDC hdcDest, RECT rcDest, HDC hdcSrc, RECT rcSrc, DWORD rop)
 
 void RectMatrixMultiply(LPRECT prc, float mat[4][4])
 {
-  prc->left *= (LONG)mat[0][0];
-  prc->right *= (LONG)mat[0][0];
-  prc->top *= (LONG)mat[1][1];
-  prc->bottom *= (LONG)mat[1][1];
+  prc->left = (LONG)round((float)prc->left * mat[0][0]);
+  prc->right = (LONG)round((float)prc->right * mat[0][0]);
+  prc->top = (LONG)round((float)prc->top * mat[1][1]);
+  prc->bottom = (LONG)round((float)prc->bottom * mat[1][1]);
 }
 
 void RectTranslate(LPRECT prc, float x, float y)
