@@ -52,6 +52,8 @@
 
 #define IDC_ABOUTTEXT 601
 
+#define IDR_ACCELERATORS 103
+
 #define IDC_STATIC -1
 
 #endif  /* PANIVIEW_RESOURCE_H */

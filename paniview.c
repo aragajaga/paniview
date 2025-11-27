@@ -446,9 +446,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
       PathUnquoteSpaces(ppszArgv[0]);
 
       PaniViewApp_LoadFromFile(ppszArgv[0]);
+
     }
   }
 
+
+  HACCEL hAccelTable;
+  hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDR_ACCELERATORS));
   /*
    * Application loop
    *
@@ -457,8 +461,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
    */
   while (GetMessage(&msg, NULL, 0, 0))
   {
-    TranslateMessage(&msg); /* Translate key messages into proper keycodes */
-    DispatchMessage(&msg);  /* Proceed message into dispatcher */
+      if (!TranslateAccelerator(pApp->mainFrame.base.hWnd, hAccelTable, &msg)) {
+          TranslateMessage(&msg); /* Translate key messages into proper keycodes */
+          DispatchMessage(&msg);  /* Proceed message into dispatcher */
+      }
   }
 
   CoUninitialize();
