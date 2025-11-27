@@ -261,6 +261,7 @@ void PaniViewFrame_OnViewPrevCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnViewNextCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnViewFitCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnDeleteCommand(LPPANIVIEWFRAME pPaniViewFrame);
+void PaniViewFrame_OnOpenLocation(LPPANIVIEWFRAME pPaniViewFrame);
 
 /* Direct2D renderer context data structure */
 typedef struct _tagD2DRENDERERCONTEXT {
@@ -373,6 +374,7 @@ void PaniViewApp_NextFile(void);
 void PaniViewApp_PrevFile(void);
 void PaniViewApp_ToggleFit(void);
 void PaniViewApp_DeleteFile(void);
+void PaniViewApp_OpenLocation(void);
 LPRENDERERCONTEXT PaniViewApp_GetRendererContext(void);
 HRESULT PaniViewApp_InitializeWIC(void);
 HRESULT PaniViewApp_LoadFromFilePGM(PWSTR pszPath, FILE* pf);
@@ -1176,6 +1178,27 @@ void PaniViewApp_DeleteFile(void)
   DeleteFile(szPathToFileToDelete);
 }
 
+void PaniViewApp_OpenLocation(void)
+{
+    LPPANIVIEWAPP pApp = GetApp();
+
+    if (PathFileExists(pApp->pszImagePath))
+    {
+        PIDLIST_ABSOLUTE pidl = ILCreateFromPath(pApp->pszImagePath);
+        if (pidl)
+        {
+            SHOpenFolderAndSelectItems(pidl, 0, NULL, 0);
+            ILFree(pidl);
+        }
+        else {
+            MessageBox(pApp->mainFrame.base.hWnd, L"Failed to open file location.", NULL, MB_OK | MB_ICONERROR);
+        }
+    }
+    else {
+        MessageBox(pApp->mainFrame.base.hWnd, L"File does not exits.", NULL, MB_OK | MB_ICONERROR);
+    }
+}
+
 void PaniView_PreRegisterClass(LPWNDCLASSEX lpwcex)
 {
   lpwcex->style = CS_HREDRAW | CS_VREDRAW;
@@ -1693,6 +1716,10 @@ BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPAR
     PaniViewFrame_OnDeleteCommand(pPaniViewFrame);
     break;
 
+  case IDM_OPENLOCATION:
+    PaniViewFrame_OnOpenLocation(pPaniViewFrame);
+    break;
+
   case IDM_SETTINGS:
     DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_SETTINGS),
       pPaniViewFrame->base.hWnd, (DLGPROC)SettingsDlgProc);
@@ -1765,6 +1792,13 @@ void PaniViewFrame_OnDeleteCommand(LPPANIVIEWFRAME pPaniViewFrame)
   UNREFERENCED_PARAMETER(pPaniViewFrame);
 
   PaniViewApp_DeleteFile();
+}
+
+void PaniViewFrame_OnOpenLocation(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  PaniViewApp_OpenLocation();
 }
 
 size_t GetPfFileSize(FILE* fp)

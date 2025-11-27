@@ -31,6 +31,7 @@
 #define IDM_FITSIZE 409
 #define IDM_ABOUT 410
 #define IDM_DELETE 411
+#define IDM_OPENLOCATION 412
 
 #define IDD_SETTINGS 501
 #define IDD_ABOUT 502
