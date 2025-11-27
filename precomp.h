@@ -49,6 +49,8 @@
 #include <shobjidl.h>
 #include <strsafe.h>
 #include <pathcch.h>
+#include <ole2.h>
+
 #include <crtdbg.h>
 
 /* Direct2D headers */

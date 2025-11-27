@@ -240,10 +240,13 @@ BOOL RenderCtl2_OnCommand(LPRENDERCTL2 pRenderCtl, WPARAM wParam, LPARAM lParam)
 void RenderCtl2_OnDestroy(LPRENDERCTL2 pRenderCtl);
 
 /* PaniView Frame */
+typedef struct DropTarget DropTarget;
+
 typedef struct _tagPANIVIEWFRAME PANIVIEWFRAME, *LPPANIVIEWFRAME;
 struct _tagPANIVIEWFRAME {
   WINDOW base;
   HWND hToolbar;
+  DropTarget* pDropTarget;
 };
 
 void PaniViewFrame_Init(LPPANIVIEWFRAME pPaniViewFrame);
@@ -262,6 +265,47 @@ void PaniViewFrame_OnViewNextCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnViewFitCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnDeleteCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnOpenLocation(LPPANIVIEWFRAME pPaniViewFrame);
+
+/* PaniView Frame OLE DropTarget */
+typedef struct DropTargetVTable {
+    /* IUnknown (U.N. Owen was her) */
+    HRESULT(STDMETHODCALLTYPE* QueryInterface)(DropTarget*, REFIID, void**);
+    ULONG(STDMETHODCALLTYPE* AddRef)(DropTarget*);
+    ULONG(STDMETHODCALLTYPE* Release)(DropTarget*);
+    /* IDropTarget */
+    HRESULT(STDMETHODCALLTYPE* DragEnter)(DropTarget*, IDataObject*, DWORD, POINTL, DWORD*);
+    HRESULT(STDMETHODCALLTYPE* DragOver)(DropTarget*, DWORD, POINTL, DWORD*);
+    HRESULT(STDMETHODCALLTYPE* DragLeave)(DropTarget*);
+    HRESULT(STDMETHODCALLTYPE* Drop)(DropTarget*, IDataObject*, DWORD, POINTL, DWORD*);
+} DropTargetVTable;
+
+struct DropTarget {
+    DropTargetVTable* lpVtlb;
+    LONG refCount;
+    HWND hwnd;
+};
+
+/* DropTarget methods forward declaration */
+HRESULT STDMETHODCALLTYPE DropTarget_QueryInterface(DropTarget*, REFIID, void**);
+ULONG STDMETHODCALLTYPE DropTarget_AddRef(DropTarget*);
+ULONG STDMETHODCALLTYPE DropTarget_Release(DropTarget*);
+HRESULT STDMETHODCALLTYPE DropTarget_DragEnter(DropTarget*, IDataObject*, DWORD, POINTL, DWORD*);
+HRESULT STDMETHODCALLTYPE DropTarget_DragOver(DropTarget*, DWORD, POINTL, DWORD*);
+HRESULT STDMETHODCALLTYPE DropTarget_DragLeave(DropTarget*);
+HRESULT STDMETHODCALLTYPE DropTarget_Drop(DropTarget*, IDataObject*, DWORD, POINTL, DWORD*);
+
+DropTarget* CreateDropTarget(HWND hwnd);
+
+/* DropTarget VTable instance */
+DropTargetVTable g_DropTargetVtbl = {
+    DropTarget_QueryInterface,
+    DropTarget_AddRef,
+    DropTarget_Release,
+    DropTarget_DragEnter,
+    DropTarget_DragOver,
+    DropTarget_DragLeave,
+    DropTarget_Drop
+};
 
 /* Direct2D renderer context data structure */
 typedef struct _tagD2DRENDERERCONTEXT {
@@ -403,6 +447,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   DWORD dwError;
   HRESULT hr = S_OK;
 
+  /* Initialize OLE (Ole ole oleole :-)) */
+  OleInitialize(NULL);
+
   /* Initialize COM API */
   hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   dwError = GetLastError();
@@ -470,6 +517,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
   }
 
   CoUninitialize();
+
+  OleUninitialize();
 
   if (!PaniViewApp_SaveSettings(pApp)) {
     MessageBox(NULL, L"Unable to save settings data", NULL, MB_OK | MB_ICONERROR);
@@ -1678,6 +1727,11 @@ void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs)
       GetWindowRect(pPaniViewFrame->base.hWnd, &rcWindow);
       SetWindowPos(pPaniViewFrame->base.hWnd, NULL, (screenWidth - RECTWIDTH(rcWindow)) / 2, (screenHeight - RECTHEIGHT(rcWindow)) / 2, 0, 0, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
   }
+
+  DropTarget* pDropTarget = CreateDropTarget(pPaniViewFrame->base.hWnd);
+  RegisterDragDrop(pPaniViewFrame->base.hWnd, (IDropTarget*)pDropTarget);
+  pDropTarget->lpVtlb->Release(pDropTarget);
+  pPaniViewFrame->pDropTarget = pDropTarget;
 }
 
 void PaniViewFrame_OnSize(LPPANIVIEWFRAME pPaniViewFrame, UINT state, int cx, int cy)
@@ -1741,7 +1795,7 @@ BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPAR
 
 void PaniViewFrame_OnDestroy(LPPANIVIEWFRAME pPaniViewFrame)
 {
-  UNREFERENCED_PARAMETER(pPaniViewFrame);
+  RevokeDragDrop(pPaniViewFrame->base.hWnd);
 
   PostQuitMessage(0);
 }
@@ -1799,6 +1853,100 @@ void PaniViewFrame_OnOpenLocation(LPPANIVIEWFRAME pPaniViewFrame)
   UNREFERENCED_PARAMETER(pPaniViewFrame);
 
   PaniViewApp_OpenLocation();
+}
+
+/* PaniView Frame OLE DropTarget implementation */
+HRESULT STDMETHODCALLTYPE DropTarget_QueryInterface(DropTarget* This, REFIID riid, void** ppv) {
+    if (!ppv) {
+        return E_POINTER;
+    }
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropTarget)) {
+        *ppv = This;
+        This->lpVtlb->AddRef(This);
+        return S_OK;
+    }
+    return E_NOINTERFACE;
+}
+
+ULONG STDMETHODCALLTYPE DropTarget_AddRef(DropTarget* This) {
+    return InterlockedIncrement(&This->refCount);
+}
+
+ULONG STDMETHODCALLTYPE DropTarget_Release(DropTarget* This) {
+    ULONG count = InterlockedDecrement(&This->refCount);
+    if (count == 0) {
+        free(This);
+    }
+    return count;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget_DragEnter(DropTarget* This, IDataObject* pDataObject, DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) {
+    UNREFERENCED_PARAMETER(This);
+    UNREFERENCED_PARAMETER(pDataObject);
+    UNREFERENCED_PARAMETER(grfKeyState);
+    UNREFERENCED_PARAMETER(pt);
+
+    *pdwEffect = DROPEFFECT_COPY;
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget_DragOver(DropTarget* This, DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) {
+    UNREFERENCED_PARAMETER(This);
+    UNREFERENCED_PARAMETER(grfKeyState);
+    UNREFERENCED_PARAMETER(pt);
+
+    *pdwEffect = DROPEFFECT_COPY;
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget_DragLeave(DropTarget* This) {
+    UNREFERENCED_PARAMETER(This);
+
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DropTarget_Drop(DropTarget* This, IDataObject* pDataObject, DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) {
+    UNREFERENCED_PARAMETER(This);
+    UNREFERENCED_PARAMETER(grfKeyState);
+    UNREFERENCED_PARAMETER(pt);
+
+    FORMATETC fmt = { 0 };
+    fmt.cfFormat = CF_HDROP;
+    fmt.ptd = NULL;
+    fmt.dwAspect = DVASPECT_CONTENT;
+    fmt.lindex = -1;
+    fmt.tymed = TYMED_HGLOBAL;
+
+    STGMEDIUM stg;
+
+    if (SUCCEEDED(pDataObject->lpVtbl->GetData(pDataObject, &fmt, &stg))) {
+        HDROP hDrop = (HDROP)GlobalLock(stg.hGlobal);
+        if (hDrop) {
+            /* TODO: Inspect why 0xFFFFFFFF? Is it INVALID_HANDLE_VALUE? */
+            UINT count = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+            for (UINT i = 0; i < count; ++i) {
+                WCHAR szFileName[MAX_PATH];
+                DragQueryFileW(hDrop, i, szFileName, MAX_PATH);
+
+                PaniViewApp_LoadFromFile(szFileName);
+                // MessageBox(This->hwnd, szFileName, L"Dropped File", MB_OK);
+            }
+            GlobalUnlock(stg.hGlobal);
+        }
+        ReleaseStgMedium(&stg);
+    }
+    *pdwEffect = DROPEFFECT_COPY;
+    return S_OK;
+}
+
+/* Create DropTarget instance */
+DropTarget* CreateDropTarget(HWND hwnd) {
+    DropTarget* pDropTarget = (DropTarget*)malloc(sizeof(DropTarget));
+    ASSERT(pDropTarget);
+    pDropTarget->lpVtlb = &g_DropTargetVtbl;
+    pDropTarget->refCount = 1;
+    pDropTarget->hwnd = hwnd;
+    return pDropTarget;
 }
 
 size_t GetPfFileSize(FILE* fp)
