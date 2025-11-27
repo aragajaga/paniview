@@ -56,12 +56,14 @@ FONT 8, "MS Shell Dlg", 400, 0, 0x1
         BS_AUTOCHECKBOX | WS_TABSTOP,7,49,97,10
     CONTROL       "Process any file, guess format by it's content",
         IDC_PROCESSANYFILE, "Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,63,160,10
+    CONTROL       "Center window on start",
+        IDC_CENTERWINDOW, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 7, 77, 160, 10
 
-    LTEXT         "Directory navigation associations:",IDC_STATIC,7,77,109,8
+    LTEXT         "Directory navigation associations:",IDC_STATIC,7,91,109,8
     CONTROL       "",IDC_NAVIASSOCLIST,"SysListView32",LVS_REPORT |
-        LVS_ALIGNLEFT | WS_BORDER | WS_TABSTOP,7,88,134,113
-    PUSHBUTTON    "Add...",IDC_NAVIASSOC_ADD,91,206,50,14
-    PUSHBUTTON    "Remove",IDC_NAVIASSOC_REM,40,207,50,14
+        LVS_ALIGNLEFT | WS_BORDER | WS_TABSTOP,7,102,134,113
+    PUSHBUTTON    "Add...",IDC_NAVIASSOC_ADD,91,220,50,14
+    PUSHBUTTON    "Remove",IDC_NAVIASSOC_REM,40,220,50,14
 
     LTEXT         "Render backend:",IDC_STATIC,190,7,56,8
     COMBOBOX      IDC_BACKENDSEL,190,18,75,30,CBS_DROPDOWN | CBS_SORT |

@@ -1,7 +1,7 @@
 /*
  *  PaniView
  *  A lightweight image viewer for Windows
- * 
+ *
  *  Copyright (c) 2021-2023 Aragajaga, Philosoph228 <philosoph228@gmail.com>
  */
 
@@ -126,6 +126,7 @@ struct _tagSETTINGS {
   int nRendererType;
   int nToolbarTheme;
   BOOL bFit;
+  BOOL bCenterWindow;
 };
 
 struct _tagNAVIASSOCENTRY {
@@ -613,7 +614,7 @@ fail:
   if (pszAppDataSite) {
     free(pszAppDataSite);
   }
-  
+
   return bStatus;
 }
 
@@ -1076,8 +1077,10 @@ HRESULT PaniViewApp_LoadFromFile(PWSTR pszPath)
 
   fclose(pf);
 
-  PaniViewApp_SetTitle(GetApp(), pszPath);
   PaniViewApp_UpdateViewport();
+  
+  
+  
 
   return hResult;
 }
@@ -1555,10 +1558,23 @@ void PaniViewFrame_PreRegister(LPPANIVIEWFRAME pPaniViewFrame, LPWNDCLASSEX lpwc
   lpwcex->lpszMenuName = MAKEINTRESOURCE(IDM_MAIN);
 }
 
+#define RECTWIDTH(rc) ((rc).right - (rc).left)
+#define RECTHEIGHT(rc) ((rc).bottom - (rc).top)
+
 void PaniViewFrame_OnCreate(LPPANIVIEWFRAME pPaniViewFrame, LPCREATESTRUCT lpcs)
 {
   UNREFERENCED_PARAMETER(pPaniViewFrame);
   UNREFERENCED_PARAMETER(lpcs);
+
+  LPPANIVIEWAPP pApp = GetApp();
+  if (pApp->m_settings.bCenterWindow) {
+      int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+      int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+      RECT rcWindow;
+      GetWindowRect(pPaniViewFrame->base.hWnd, &rcWindow);
+      SetWindowPos(pPaniViewFrame->base.hWnd, NULL, (screenWidth - RECTWIDTH(rcWindow)) / 2, (screenHeight - RECTHEIGHT(rcWindow)) / 2, 0, 0, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+  }
 }
 
 void PaniViewFrame_OnSize(LPPANIVIEWFRAME pPaniViewFrame, UINT state, int cx, int cy)
@@ -3010,7 +3026,7 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
 
         // Load toolbar theme combo box
         {
-          HWND hToolbarIconSel = GetDlgItem(hWnd, IDC_TOOLBARICONSEL); 
+          HWND hToolbarIconSel = GetDlgItem(hWnd, IDC_TOOLBARICONSEL);
 
           int nItem2;
           nItem2 = ComboBox_AddString(hToolbarIconSel, L"Classic 16px");
@@ -3034,6 +3050,9 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
               (LPARAM) TOOLBARTHEME_FUGUEICONS_24PX);
         }
 
+        // Initialize center window checkbox
+        HWND hCheckCenterWindow = GetDlgItem(hWnd, IDC_CENTERWINDOW);
+        Button_SetCheck(hCheckCenterWindow, pSettings->bCenterWindow);
 
         // Initialize file association listview
         HWND hList = GetDlgItem(hWnd, IDC_NAVIASSOCLIST);
@@ -3077,12 +3096,16 @@ INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam,
           HWND hRendererSel = GetDlgItem(hWnd, IDC_BACKENDSEL);
           int nCurSel = ComboBox_GetCurSel(hRendererSel);
           int rendererType = (int) ComboBox_GetItemData(hRendererSel, nCurSel);
-          
+
           if (rendererType != pSettings->nRendererType)
-          {            
+          {
             pSettings->nRendererType = rendererType;
             pApp->m_rendererContext = CreateRendererContext();
-          }          
+          }
+
+          HWND hCheckCenterWindow = GetDlgItem(hWnd, IDC_CENTERWINDOW);
+          BOOL bCheck = Button_GetCheck(hCheckCenterWindow);
+          pApp->m_settings.bCenterWindow = bCheck;
 
           EndDialog(hWnd, 0);
           return TRUE;
