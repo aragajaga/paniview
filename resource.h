@@ -30,6 +30,7 @@
 #define IDM_ACTUALSIZE 408
 #define IDM_FITSIZE 409
 #define IDM_ABOUT 410
+#define IDM_DELETE 411
 
 #define IDD_SETTINGS 501
 #define IDD_ABOUT 502

@@ -260,6 +260,7 @@ void PaniViewFrame_OnFileOpenCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnViewPrevCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnViewNextCommand(LPPANIVIEWFRAME pPaniViewFrame);
 void PaniViewFrame_OnViewFitCommand(LPPANIVIEWFRAME pPaniViewFrame);
+void PaniViewFrame_OnDeleteCommand(LPPANIVIEWFRAME pPaniViewFrame);
 
 /* Direct2D renderer context data structure */
 typedef struct _tagD2DRENDERERCONTEXT {
@@ -371,6 +372,7 @@ void PaniViewApp_SetFilePath(PWSTR pszPath);
 void PaniViewApp_NextFile(void);
 void PaniViewApp_PrevFile(void);
 void PaniViewApp_ToggleFit(void);
+void PaniViewApp_DeleteFile(void);
 LPRENDERERCONTEXT PaniViewApp_GetRendererContext(void);
 HRESULT PaniViewApp_InitializeWIC(void);
 HRESULT PaniViewApp_LoadFromFilePGM(PWSTR pszPath, FILE* pf);
@@ -1164,6 +1166,16 @@ void PaniViewApp_ToggleFit(void)
   PaniViewApp_UpdateViewport();
 }
 
+void PaniViewApp_DeleteFile(void)
+{
+  LPPANIVIEWAPP pApp = GetApp();
+
+  WCHAR szPathToFileToDelete[MAX_PATH] = { 0 };
+  wcscpy_s(szPathToFileToDelete, ARRAYSIZE(szPathToFileToDelete), pApp->pszImagePath);
+  PaniViewApp_NextFile();
+  DeleteFile(szPathToFileToDelete);
+}
+
 void PaniView_PreRegisterClass(LPWNDCLASSEX lpwcex)
 {
   lpwcex->style = CS_HREDRAW | CS_VREDRAW;
@@ -1677,11 +1689,15 @@ BOOL PaniViewFrame_OnCommand(LPPANIVIEWFRAME pPaniViewFrame, WPARAM wParam, LPAR
     PaniViewFrame_OnViewFitCommand(pPaniViewFrame);
     break;
 
+  case IDM_DELETE:
+    PaniViewFrame_OnDeleteCommand(pPaniViewFrame);
+    break;
+
   case IDM_SETTINGS:
     DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_SETTINGS),
       pPaniViewFrame->base.hWnd, (DLGPROC)SettingsDlgProc);
     break;
-    
+
 
   case IDM_ABOUT:
     DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_ABOUT),
@@ -1742,6 +1758,13 @@ void PaniViewFrame_OnViewFitCommand(LPPANIVIEWFRAME pPaniViewFrame)
   UNREFERENCED_PARAMETER(pPaniViewFrame);
 
   PaniViewApp_ToggleFit();
+}
+
+void PaniViewFrame_OnDeleteCommand(LPPANIVIEWFRAME pPaniViewFrame)
+{
+  UNREFERENCED_PARAMETER(pPaniViewFrame);
+
+  PaniViewApp_DeleteFile();
 }
 
 size_t GetPfFileSize(FILE* fp)
