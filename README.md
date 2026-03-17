@@ -7,3 +7,8 @@
 ![](https://shields.io/badge/Made%20with%20VIM%20-darkgreen?logo=vim)
 
 A lightweight image viewer for Windows, written in C.
+
+## Also check this out
+Similar projects with a similar vibe and just cool links
+
+https://github.com/katahiromz/Rshimgvw — fork of ReactOS shimgvw implementation
